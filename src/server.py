@@ -310,7 +310,16 @@ async def check_ppubs_status() -> dict:
         "Query syntax follows PPUBS BRS — e.g. 'graphene', 'graphene AND "
         "battery', '(\"6103599\").pn.'. Default sources: US-PGPUB (published "
         "applications), USPAT (granted patents), USOCR (OCR'd older patents). "
-        "Returns a paginated result envelope with verbosity-filtered records."
+        "Returns a paginated envelope of summary-tier records (id, title, "
+        "applicant, classification, dates, family ID — about 18 fields per "
+        "record at standard verbosity). NOTE: the summary tier does NOT "
+        "include abstract or claims HTML. To get a full document with "
+        "abstract+claims+full applicant/assignee+inventor metadata, follow up "
+        "with `ppubs_get_patent_by_number(publication_number=<record."
+        "publicationReferenceDocumentNumber>)` for any result you want to "
+        "drill into. Alternatively pass verbosity='full' to this search tool "
+        "to include all 89 raw PPUBS fields per record at once (heavier "
+        "response, useful for batch analysis)."
     ),
 )
 async def ppubs_search_patents(
@@ -344,13 +353,18 @@ async def ppubs_search_patents(
 @mcp.tool(
     "ppubs_get_patent_by_number",
     description=(
-        "Look up a single US patent or published application by publication "
-        "number on USPTO Patent Public Search (ppubs.uspto.gov). Accepts "
-        "granted-patent numbers (e.g. '6103599', 'US 6,103,599') and "
-        "published-application numbers (e.g. '20260126277', 'US 2026/0126277'). "
-        "Returns the full document including abstract/claims HTML, "
-        "classification, applicant/assignee metadata, and family identifier. "
-        "Returns {found: false} if no match. No auth required."
+        "Fetch the FULL document for a single US patent or published "
+        "application from USPTO Patent Public Search (ppubs.uspto.gov). Use "
+        "this AFTER `ppubs_search_patents` returns a result you want to drill "
+        "into — search results are summary-tier and do NOT include the "
+        "abstract or claims, but THIS tool returns the full document with "
+        "**abstractHtml**, **claimsHtml**, full per-inventor names + per-"
+        "assignee metadata + locations, full classification (CPC/IPC/USPC "
+        "flattened), continuity data, examiners, legal firm, and family "
+        "identifier. Accepts granted-patent numbers (e.g. '6103599', 'US "
+        "6,103,599') and published-application numbers (e.g. '20260126277', "
+        "'US 2026/0126277'); strips commas/whitespace and an optional 'US ' "
+        "prefix. Returns {found: false} if no match. No auth required."
     ),
 )
 async def ppubs_get_patent_by_number(
@@ -376,10 +390,13 @@ async def ppubs_get_patent_by_number(
     "ppubs_get_search_count",
     description=(
         "Count US patents and published applications matching a PPUBS BRS "
-        "query without paginating documents. Cheaper than "
-        "ppubs_search_patents — useful for tuning a query before running "
-        "the full search. Default sources: US-PGPUB, USPAT, USOCR. Returns "
-        "{total, query, sources}."
+        "query without fetching any documents. Cheaper and faster than "
+        "`ppubs_search_patents` — useful for tuning a query before running "
+        "the full search, or for answering 'how many?' questions directly. "
+        "Default sources: US-PGPUB (published applications), USPAT (granted "
+        "patents), USOCR (OCR'd older patents). Returns {total, query, "
+        "sources}. After this, call `ppubs_search_patents` to actually list "
+        "matching records."
     ),
 )
 async def ppubs_get_search_count(
