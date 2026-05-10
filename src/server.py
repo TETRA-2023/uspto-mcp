@@ -10,7 +10,7 @@ from typing import Any, Optional
 from mcp.server.fastmcp import FastMCP
 
 from src.config import mask_credential, settings
-from src.uspto_client import UsptoClient
+from src.uspto_client import PPUBS_DEFAULT_SOURCES, UsptoClient
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(
@@ -276,6 +276,35 @@ async def ppubs_get_patent_by_number(
         "found": True,
         "publication_number": publication_number,
         "record": _filter_response(detail, "patent_detail", verbosity),
+    }
+
+
+@mcp.tool(
+    "ppubs_get_search_count",
+    description=(
+        "Count US patents and published applications matching a PPUBS BRS "
+        "query without paginating documents. Cheaper than "
+        "ppubs_search_patents — useful for tuning a query before running "
+        "the full search. Default sources: US-PGPUB, USPAT, USOCR. Returns "
+        "{total, query, sources}."
+    ),
+)
+async def ppubs_get_search_count(
+    query: str,
+    sources: Optional[list[str]] = None,
+) -> dict:
+    """Get count for a PPUBS query (no document pagination)."""
+    client = _get_client()
+    payload = await client.ppubs_count_patents(query=query, sources=sources)
+    echoed = [
+        f.get("databaseName")
+        for f in (payload.get("databaseFilters") or [])
+        if f.get("databaseName")
+    ]
+    return {
+        "total": payload.get("numResults"),
+        "query": payload.get("q") or query,
+        "sources": echoed or list(PPUBS_DEFAULT_SOURCES),
     }
 
 

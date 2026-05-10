@@ -30,6 +30,7 @@ PPUBS protocol notes (locked 2026-05-10 against live probe):
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timedelta
 from typing import Any, Optional
@@ -41,6 +42,10 @@ logger = logging.getLogger(__name__)
 PPUBS_USER_AGENT = "tetra-uspto-mcp/1.0"
 PPUBS_SESSION_TTL = timedelta(minutes=25)
 PPUBS_DEFAULT_SOURCES = ("US-PGPUB", "USPAT", "USOCR")
+# Conservative fallback when PPUBS 429s without a parseable retry hint.
+PPUBS_RATE_LIMIT_DEFAULT_DELAY = 30
+# Cap retry sleeps at 5 min so a hostile/buggy server header can't park us.
+PPUBS_RATE_LIMIT_MAX_DELAY = 300
 
 
 class UsptoAPIError(Exception):
@@ -159,17 +164,71 @@ class UsptoClient:
             return
         await self._establish_ppubs_session()
 
-    async def _ppubs_post(self, path: str, json_body: Any) -> httpx.Response:
-        """POST to a PPUBS endpoint with one auto-retry on session expiry.
+    @staticmethod
+    def _parse_retry_after(
+        response: httpx.Response, default: int = PPUBS_RATE_LIMIT_DEFAULT_DELAY
+    ) -> int:
+        """Parse PPUBS rate-limit retry hint from response headers.
 
-        Reauthenticates and retries once on 403; everything else is returned
-        as-is for the caller to interpret.
+        PPUBS uses a custom ``x-rate-limit-retry-after-seconds`` header. We
+        also honour the standard ``Retry-After`` (RFC 7231 §7.1.3) as a
+        secondary, and fall back to a conservative default if neither is
+        present or parseable. Adds a 1-second buffer past the server's
+        stated delay so we don't race the throttle window, and caps the
+        wait at 5 min.
         """
-        response = await self._ppubs.post(path, json=json_body)
+        candidates = (
+            response.headers.get("x-rate-limit-retry-after-seconds"),
+            response.headers.get("retry-after"),
+        )
+        for raw in candidates:
+            if raw is None:
+                continue
+            try:
+                value = int(raw)
+            except (TypeError, ValueError):
+                continue
+            if value <= 0:
+                continue
+            return min(value + 1, PPUBS_RATE_LIMIT_MAX_DELAY)
+        return default
+
+    async def _ppubs_request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
+        """Issue a PPUBS request with one retry per error class.
+
+        * On HTTP 403 (session expiry) — re-establish the session and retry
+          once. Bootstrap path: ``_establish_ppubs_session`` itself does NOT
+          go through this helper (would recurse).
+        * On HTTP 429 (rate limit) — sleep for the server's stated retry-
+          after window (or a conservative default) and retry once. Honours
+          PPUBS's custom ``x-rate-limit-retry-after-seconds`` header and
+          standard ``Retry-After``.
+
+        Single retry per class; the second response is surfaced to the
+        caller regardless of status.
+        """
+        response = await self._ppubs.request(method, path, **kwargs)
+
         if response.status_code == 403:
-            logger.info("PPUBS returned 403 — re-establishing session and retrying once")
+            logger.info(
+                "PPUBS %s %s returned 403 — re-establishing session and retrying once",
+                method,
+                path,
+            )
             await self._establish_ppubs_session()
-            response = await self._ppubs.post(path, json=json_body)
+            response = await self._ppubs.request(method, path, **kwargs)
+
+        if response.status_code == 429:
+            delay = self._parse_retry_after(response)
+            logger.warning(
+                "PPUBS %s %s returned 429 — sleeping %ss and retrying once",
+                method,
+                path,
+                delay,
+            )
+            await asyncio.sleep(delay)
+            response = await self._ppubs.request(method, path, **kwargs)
+
         return response
 
     # ── PPUBS reachability ──
@@ -205,6 +264,36 @@ class UsptoClient:
 
     # ── PPUBS search ──
 
+    def _build_query_block(
+        self,
+        query: str,
+        *,
+        sources: Optional[list[str]] = None,
+        plurals: bool = True,
+        british_equivalents: bool = True,
+        default_operator: str = "OR",
+    ) -> dict:
+        """Build the inner ``query`` block shared by search and counts endpoints."""
+        if sources is None:
+            sources = list(PPUBS_DEFAULT_SOURCES)
+        return {
+            "caseId": self._ppubs_case_id,
+            "hl_snippets": "2",
+            "op": default_operator,
+            "q": query,
+            "queryName": query,
+            "highlights": "1",
+            "qt": "brs",
+            "spellCheck": False,
+            "viewName": "tile",
+            "plurals": plurals,
+            "britishEquivalents": british_equivalents,
+            "databaseFilters": [{"databaseName": s, "countryCodes": []} for s in sources],
+            "searchType": 1,
+            "ignorePersist": True,
+            "userEnteredQuery": query,
+        }
+
     async def ppubs_search_patents(
         self,
         query: str,
@@ -226,26 +315,13 @@ class UsptoClient:
         """
         await self._ensure_ppubs_session()
 
-        if sources is None:
-            sources = list(PPUBS_DEFAULT_SOURCES)
-
-        query_block = {
-            "caseId": self._ppubs_case_id,
-            "hl_snippets": "2",
-            "op": default_operator,
-            "q": query,
-            "queryName": query,
-            "highlights": "1",
-            "qt": "brs",
-            "spellCheck": False,
-            "viewName": "tile",
-            "plurals": plurals,
-            "britishEquivalents": british_equivalents,
-            "databaseFilters": [{"databaseName": s, "countryCodes": []} for s in sources],
-            "searchType": 1,
-            "ignorePersist": True,
-            "userEnteredQuery": query,
-        }
+        query_block = self._build_query_block(
+            query,
+            sources=sources,
+            plurals=plurals,
+            british_equivalents=british_equivalents,
+            default_operator=default_operator,
+        )
         body = {
             "start": start,
             "pageCount": min(max(limit, 1), 500),
@@ -262,10 +338,44 @@ class UsptoClient:
             "query": query_block,
         }
 
-        response = await self._ppubs_post("/api/searches/searchWithBeFamily", body)
+        response = await self._ppubs_request("POST", "/api/searches/searchWithBeFamily", json=body)
         if response.status_code != 200:
             raise UsptoAPIError(
                 f"PPUBS search failed: {response.text[:200]}",
+                status_code=response.status_code,
+            )
+        return response.json()
+
+    async def ppubs_count_patents(
+        self,
+        query: str,
+        *,
+        sources: Optional[list[str]] = None,
+        plurals: bool = True,
+        british_equivalents: bool = True,
+        default_operator: str = "OR",
+    ) -> dict:
+        """Get a result count without paginating documents.
+
+        Hits ``POST /api/searches/counts`` with the inner ``query`` block
+        only (no envelope). Cheaper than ``ppubs_search_patents`` — useful
+        for query tuning before running the full search. Returns the raw
+        PPUBS counts payload (``numResults``, echoed query/sources, term
+        graph, etc.).
+        """
+        await self._ensure_ppubs_session()
+
+        query_block = self._build_query_block(
+            query,
+            sources=sources,
+            plurals=plurals,
+            british_equivalents=british_equivalents,
+            default_operator=default_operator,
+        )
+        response = await self._ppubs_request("POST", "/api/searches/counts", json=query_block)
+        if response.status_code != 200:
+            raise UsptoAPIError(
+                f"PPUBS counts query failed: {response.text[:200]}",
                 status_code=response.status_code,
             )
         return response.json()
@@ -308,15 +418,11 @@ class UsptoClient:
         if not guid or not source_type:
             raise UsptoAPIError(f"PPUBS search returned a record without guid/type: {record!r}")
 
-        # Step 2 — fetch full document detail. Endpoint is GET, not POST,
-        # so the shared _ppubs_post 403-retry helper doesn't apply.
+        # Step 2 — fetch full document detail through the shared retry helper
+        # (handles 403 session-expiry and 429 rate-limit retries uniformly).
         params = {"queryId": 1, "source": source_type, "includeSections": "true"}
         path = f"/api/patents/highlight/{guid}"
-        response = await self._ppubs.get(path, params=params)
-        if response.status_code == 403:
-            logger.info("PPUBS highlight returned 403 — re-establishing session and retrying")
-            await self._establish_ppubs_session()
-            response = await self._ppubs.get(path, params=params)
+        response = await self._ppubs_request("GET", path, params=params)
         if response.status_code != 200:
             raise UsptoAPIError(
                 f"PPUBS highlight fetch failed: {response.text[:200]}",

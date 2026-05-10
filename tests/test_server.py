@@ -2,6 +2,7 @@
 
 from unittest.mock import AsyncMock
 
+import httpx
 import pytest
 
 import src.server
@@ -189,6 +190,73 @@ class TestPpubsTools:
         assert "applicantName" not in record
         assert "guid" in record
         assert "inventionTitle" in record
+
+    @pytest.mark.asyncio
+    async def test_ppubs_get_search_count(self, mock_client):
+        mock_client.ppubs_count_patents.return_value = {
+            "numResults": 140619,
+            "q": "graphene",
+            "queryName": "graphene",
+            "databaseFilters": [
+                {"databaseName": "US-PGPUB", "countryCodes": []},
+                {"databaseName": "USPAT", "countryCodes": []},
+                {"databaseName": "USOCR", "countryCodes": []},
+            ],
+        }
+        result = await src.server.ppubs_get_search_count("graphene")
+        assert result["total"] == 140619
+        assert result["query"] == "graphene"
+        assert result["sources"] == ["US-PGPUB", "USPAT", "USOCR"]
+        mock_client.ppubs_count_patents.assert_called_once_with(query="graphene", sources=None)
+
+    @pytest.mark.asyncio
+    async def test_ppubs_get_search_count_custom_sources(self, mock_client):
+        mock_client.ppubs_count_patents.return_value = {
+            "numResults": 5,
+            "q": "graphene",
+            "databaseFilters": [{"databaseName": "USPAT", "countryCodes": []}],
+        }
+        result = await src.server.ppubs_get_search_count("graphene", sources=["USPAT"])
+        assert result["total"] == 5
+        assert result["sources"] == ["USPAT"]
+        mock_client.ppubs_count_patents.assert_called_once_with(query="graphene", sources=["USPAT"])
+
+
+class TestRateLimitParsing:
+    def test_parse_retry_after_uspto_header(self):
+        resp = httpx.Response(429, headers={"x-rate-limit-retry-after-seconds": "10"})
+        # Adds 1s buffer past the server's stated delay
+        assert UsptoClient._parse_retry_after(resp) == 11
+
+    def test_parse_retry_after_standard_header(self):
+        resp = httpx.Response(429, headers={"retry-after": "5"})
+        assert UsptoClient._parse_retry_after(resp) == 6
+
+    def test_parse_retry_after_uspto_takes_precedence(self):
+        resp = httpx.Response(
+            429,
+            headers={
+                "x-rate-limit-retry-after-seconds": "10",
+                "retry-after": "5",
+            },
+        )
+        assert UsptoClient._parse_retry_after(resp) == 11
+
+    def test_parse_retry_after_default_when_no_header(self):
+        resp = httpx.Response(429)
+        assert UsptoClient._parse_retry_after(resp) == 30
+
+    def test_parse_retry_after_default_when_unparseable(self):
+        resp = httpx.Response(429, headers={"retry-after": "soon-ish"})
+        assert UsptoClient._parse_retry_after(resp) == 30
+
+    def test_parse_retry_after_default_when_zero(self):
+        resp = httpx.Response(429, headers={"x-rate-limit-retry-after-seconds": "0"})
+        assert UsptoClient._parse_retry_after(resp) == 30
+
+    def test_parse_retry_after_caps_at_5_minutes(self):
+        resp = httpx.Response(429, headers={"x-rate-limit-retry-after-seconds": "9999"})
+        assert UsptoClient._parse_retry_after(resp) == 300
 
 
 class TestResponseFiltering:

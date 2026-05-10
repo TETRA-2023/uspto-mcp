@@ -88,6 +88,9 @@ uv run python src/server.py
 |------|-------------|
 | `ppubs_search_patents` | Full-text search across granted US patents + published applications. PPUBS BRS query syntax (e.g. `graphene`, `(\"6103599\").pn.`). |
 | `ppubs_get_patent_by_number` | Fetch one record by publication number — accepts both granted-patent numbers (e.g. `6103599`) and published-application numbers (e.g. `20260126277`). Returns abstract + claims HTML, classification, applicant/assignee metadata, family identifier. |
+| `ppubs_get_search_count` | Cheap result count for a PPUBS BRS query — no document pagination. Useful for tuning a query before running the full search. |
+
+PPUBS rate-limit handling: the wrapper honours `x-rate-limit-retry-after-seconds` (PPUBS-specific) and standard `Retry-After` headers on 429 responses, sleeps for the indicated window, and retries once. Sleeps are capped at 5 min.
 
 ### ODP (Phase 2, deferred)
 
