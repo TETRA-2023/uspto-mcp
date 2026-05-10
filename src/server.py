@@ -1,0 +1,218 @@
+"""USPTO MCP server — wraps PPUBS (Phase 1) and ODP (Phase 2) data sources."""
+
+import logging
+import os
+import sys
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from typing import Any, Optional
+
+from mcp.server.fastmcp import FastMCP
+
+from src.config import mask_credential, settings
+from src.uspto_client import UsptoClient
+
+logger = logging.getLogger(__name__)
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
+
+# ── Response field filtering ──
+
+RESPONSE_FIELDS: dict[str, dict[str, Optional[list[str]]]] = {
+    # Populated as Phase 1 (PPUBS) tools land. Keys to expect:
+    #   "patent_summary"  — search-result row shape
+    #   "patent_detail"   — full record shape from get-by-number
+    # Phase 2 (ODP) adds: "application_summary", "application_detail",
+    # "continuity", "transaction".
+}
+
+VALID_VERBOSITY_LEVELS = {"minimal", "standard", "full"}
+
+
+def _filter_response(response: Any, resource_type: str, verbosity: str = "standard") -> Any:
+    """Filter response fields based on verbosity level."""
+    if response is None:
+        return None
+
+    if verbosity not in VALID_VERBOSITY_LEVELS:
+        logger.warning(f"Invalid verbosity '{verbosity}', using 'standard'")
+        verbosity = "standard"
+
+    if verbosity == "full":
+        return response
+
+    if resource_type not in RESPONSE_FIELDS:
+        return response
+
+    fields = RESPONSE_FIELDS[resource_type].get(verbosity)
+    if fields is None:
+        return response
+
+    field_set = set(fields)
+
+    def filter_dict(d: dict) -> dict:
+        return {k: v for k, v in d.items() if k in field_set}
+
+    if isinstance(response, list):
+        return [filter_dict(item) for item in response if isinstance(item, dict)]
+    if isinstance(response, dict):
+        return filter_dict(response)
+    return response
+
+
+# ── Client accessor ──
+
+_client: Optional[UsptoClient] = None
+
+
+def _get_client() -> UsptoClient:
+    """Get the global USPTO client instance."""
+    if _client is None:
+        raise RuntimeError("USPTO client not initialized. Ensure server lifespan has run.")
+    return _client
+
+
+# ── Server lifecycle ──
+
+
+@asynccontextmanager
+async def server_lifespan(server: FastMCP) -> AsyncIterator[None]:
+    """Initialize USPTO client on startup, cleanup on shutdown."""
+    global _client
+
+    odp_key_value: Optional[str] = None
+    if settings.has_odp_api_key:
+        odp_key_value = settings.get_odp_api_key_value()
+        logger.info(
+            "ODP key present (key: %s); Phase 2 ODP tools will load when added.",
+            mask_credential(odp_key_value),
+        )
+    else:
+        logger.info("USPTO_ODP_API_KEY not set — Phase 1 only (PPUBS, no auth).")
+
+    logger.info(
+        "Connecting to USPTO data sources (PPUBS=%s, ODP=%s)",
+        settings.ppubs_url,
+        settings.odp_url,
+    )
+
+    client = UsptoClient(
+        ppubs_url=settings.ppubs_url,
+        odp_url=settings.odp_url,
+        odp_api_key=odp_key_value,
+    )
+
+    connected = await client.check_connection()
+    if connected:
+        logger.info("PPUBS reachability verified.")
+    else:
+        logger.warning("Could not verify PPUBS reachability. Tools may fail.")
+
+    _client = client
+
+    try:
+        yield
+    finally:
+        logger.info("Shutting down USPTO MCP server...")
+        await client.close()
+        _client = None
+
+
+# ── MCP Server ──
+
+_mcp_port_str = os.environ.get("MCP_PORT", "8000")
+try:
+    _mcp_port = int(_mcp_port_str)
+except ValueError:
+    _mcp_port = 8000
+
+mcp = FastMCP(
+    "USPTO MCP",
+    lifespan=server_lifespan,
+    host=os.environ.get("MCP_HOST", "127.0.0.1"),
+    port=_mcp_port,
+)
+
+
+# ── Tools ──
+
+
+@mcp.tool(
+    "check_ppubs_status",
+    description=(
+        "Probe USPTO Patent Public Search (ppubs.uspto.gov) for reachability. "
+        "No auth required. Returns reachability flag, HTTP status code, and "
+        "the configured base URL. Useful as a smoke test from the gateway."
+    ),
+)
+async def check_ppubs_status() -> dict:
+    """Foundation-slice tool — verifies PPUBS reachability."""
+    client = _get_client()
+    return await client.check_ppubs_status()
+
+
+# ── Transport resolution ──
+
+VALID_TRANSPORTS = ("stdio", "sse", "streamable-http")
+
+
+def _resolve_transport(argv: list[str] | None = None, env: dict[str, str] | None = None) -> str:
+    """Determine transport from CLI flags or env var."""
+    if argv is None:
+        argv = sys.argv
+    if env is None:
+        env = dict(os.environ)
+
+    if "--sse" in argv:
+        return "sse"
+    if "--streamable-http" in argv:
+        return "streamable-http"
+
+    env_transport = env.get("USPTO_TRANSPORT", "").lower()
+    if env_transport in VALID_TRANSPORTS:
+        return env_transport
+    return "stdio"
+
+
+def _run(transport: str) -> None:
+    """Dispatch to the right runner. Wraps HTTP transports with bearer auth
+    when ``MCP_BEARER_TOKEN`` is set; stdio is always passed through untouched.
+    """
+    if transport == "stdio":
+        mcp.run(transport="stdio")
+        return
+
+    import uvicorn
+
+    from src.auth import BearerAuthMiddleware
+    from src.logging_filters import StandaloneSseWriterRaceFilter
+
+    sdk_logger = logging.getLogger("mcp.server.streamable_http")
+    if not any(isinstance(f, StandaloneSseWriterRaceFilter) for f in sdk_logger.filters):
+        sdk_logger.addFilter(StandaloneSseWriterRaceFilter())
+
+    app = mcp.streamable_http_app() if transport == "streamable-http" else mcp.sse_app()
+
+    if settings.has_bearer_token:
+        app = BearerAuthMiddleware(app, expected_token=settings.get_bearer_token_value())
+        logger.info("Bearer-token middleware enabled for %s transport", transport)
+    else:
+        logger.warning(
+            "MCP_BEARER_TOKEN not set — %s transport accepts unauthenticated requests",
+            transport,
+        )
+
+    config = uvicorn.Config(
+        app,
+        host=mcp.settings.host,
+        port=mcp.settings.port,
+        log_level=mcp.settings.log_level.lower(),
+    )
+    uvicorn.Server(config).run()
+
+
+if __name__ == "__main__":
+    transport = _resolve_transport()
+    logger.info(f"Starting USPTO MCP server with {transport} transport")
+    _run(transport)
