@@ -20,10 +20,17 @@ logging.basicConfig(
 # ── Response field filtering ──
 
 RESPONSE_FIELDS: dict[str, dict[str, Optional[list[str]]]] = {
+    # patent_summary covers the per-record shape returned by
+    # POST /api/searches/searchWithBeFamily. Field naming gotchas:
+    # inventorsShort (compact "Doe; Jane et al." string) is the search-side
+    # inventor field — it's empty for many US-PGPUB applications because
+    # inventor metadata fully populates only at grant; patent_detail has
+    # the richer inventorsName list.
     "patent_summary": {
         "minimal": [
             "guid",
             "type",
+            "kindCode",
             "publicationReferenceDocumentNumber",
             "inventionTitle",
             "datePublished",
@@ -31,11 +38,14 @@ RESPONSE_FIELDS: dict[str, dict[str, Optional[list[str]]]] = {
         "standard": [
             "guid",
             "type",
+            "kindCode",
             "publicationReferenceDocumentNumber",
             "applicationNumber",
             "inventionTitle",
             "datePublished",
+            "inventorsShort",
             "applicantName",
+            "assigneeName",
             "mainClassificationCode",
             "ipcCodeFlattened",
             "cpcInventiveFlattened",
@@ -43,24 +53,31 @@ RESPONSE_FIELDS: dict[str, dict[str, Optional[list[str]]]] = {
         ],
         "full": None,
     },
+    # patent_detail covers GET /api/patents/highlight/{guid}. inventorsName
+    # is the full-name list (per-inventor); inventorsShort is the compact
+    # display string. Both are surfaced at standard so patent-attorney
+    # workflows have inventor metadata without falling back to full.
     "patent_detail": {
         "minimal": [
             "guid",
             "type",
+            "kindCode",
             "inventionTitle",
             "datePublished",
             "applicationNumber",
-            "kindCode",
+            "inventorsShort",
             "abstractHtml",
         ],
         "standard": [
             "guid",
             "type",
+            "kindCode",
             "inventionTitle",
             "datePublished",
             "applicationNumber",
             "applicationFilingDate",
-            "kindCode",
+            "inventorsShort",
+            "inventorsName",
             "applicantName",
             "assigneeName",
             "assigneeCity",

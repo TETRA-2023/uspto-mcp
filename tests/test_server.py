@@ -56,11 +56,14 @@ class TestPpubsTools:
                 {
                     "guid": "US-20260126277-A1",
                     "type": "US-PGPUB",
+                    "kindCode": ["A1"],
                     "publicationReferenceDocumentNumber": "20260126277",
                     "applicationNumber": "18/932154",
                     "inventionTitle": "POLYMERIC CARTRIDGE ASSEMBLY",
                     "datePublished": "2026-05-07T00:00:00Z",
+                    "inventorsShort": "",  # often empty pre-grant for US-PGPUB
                     "applicantName": ["Battaglia; Vincent"],
+                    "assigneeName": [],
                     "mainClassificationCode": "1/1",
                     "ipcCodeFlattened": "F42B5/307",
                     "cpcInventiveFlattened": "F42B5/307",
@@ -70,11 +73,14 @@ class TestPpubsTools:
                 {
                     "guid": "US-1234567-B2",
                     "type": "USPAT",
+                    "kindCode": ["B2"],
                     "publicationReferenceDocumentNumber": "1234567",
                     "applicationNumber": "10/000001",
                     "inventionTitle": "WIDGET",
                     "datePublished": "2020-01-01T00:00:00Z",
+                    "inventorsShort": "Doe; Jane et al.",
                     "applicantName": ["Doe; Jane"],
+                    "assigneeName": ["Acme Corp"],
                     "mainClassificationCode": "2/2",
                     "ipcCodeFlattened": "G06F1/00",
                     "cpcInventiveFlattened": "G06F1/00",
@@ -88,9 +94,18 @@ class TestPpubsTools:
         assert result["num_found"] == 140619
         assert len(result["results"]) == 2
         # standard verbosity strips frontPageStart but keeps title + filing date
-        assert "frontPageStart" not in result["results"][0]
-        assert result["results"][0]["inventionTitle"] == "POLYMERIC CARTRIDGE ASSEMBLY"
-        assert result["results"][0]["applicationFilingDate"] == ["2024-10-30T00:00:00Z"]
+        # + the new inventor/assignee/kind fields
+        first = result["results"][0]
+        second = result["results"][1]
+        assert "frontPageStart" not in first
+        assert first["inventionTitle"] == "POLYMERIC CARTRIDGE ASSEMBLY"
+        assert first["applicationFilingDate"] == ["2024-10-30T00:00:00Z"]
+        assert first["kindCode"] == ["A1"]
+        assert "inventorsShort" in first  # surfaces even when empty for US-PGPUB
+        assert "assigneeName" in first
+        assert second["inventorsShort"] == "Doe; Jane et al."
+        assert second["assigneeName"] == ["Acme Corp"]
+        assert second["kindCode"] == ["B2"]
         mock_client.ppubs_search_patents.assert_called_once_with(
             query="graphene", limit=2, start=0, sort="date_publ desc", sources=None
         )
@@ -105,6 +120,8 @@ class TestPpubsTools:
             "applicationNumber": "09/089931",
             "applicationFilingDate": ["1998-06-03T00:00:00Z"],
             "kindCode": ["A"],
+            "inventorsShort": "Henley; Francois J. et al.",
+            "inventorsName": ["Henley; Francois J.", "Cheung; Nathan"],
             "applicantName": [],
             "assigneeName": ["Silicon Genesis Corporation"],
             "assigneeCity": ["Los Gatos"],
@@ -131,6 +148,8 @@ class TestPpubsTools:
         record = result["record"]
         assert record["guid"] == "US-6103599-A"
         assert record["assigneeName"] == ["Silicon Genesis Corporation"]
+        assert record["inventorsShort"] == "Henley; Francois J. et al."
+        assert record["inventorsName"] == ["Henley; Francois J.", "Cheung; Nathan"]
         assert record["abstractHtml"].startswith("The present invention")
         assert "extraField" not in record  # standard verbosity strips unregistered fields
         mock_client.ppubs_get_patent_by_number.assert_called_once_with("6103599")
@@ -150,6 +169,8 @@ class TestPpubsTools:
             "datePublished": "2000-08-15T00:00:00Z",
             "applicationNumber": "09/089931",
             "kindCode": ["A"],
+            "inventorsShort": "Henley; Francois J. et al.",
+            "inventorsName": ["Henley; Francois J.", "Cheung; Nathan"],
             "abstractHtml": "Abstract...",
             "claimsHtml": "Claims...",
             "assigneeName": ["Silicon Genesis Corporation"],
@@ -157,6 +178,8 @@ class TestPpubsTools:
         result = await src.server.ppubs_get_patent_by_number("6103599", verbosity="minimal")
         record = result["record"]
         assert "abstractHtml" in record
+        assert record["inventorsShort"] == "Henley; Francois J. et al."  # minimal keeps short form
+        assert "inventorsName" not in record  # minimal drops the per-inventor list
         assert "claimsHtml" not in record  # minimal drops claims
         assert "assigneeName" not in record  # minimal drops assignee
 
@@ -172,11 +195,13 @@ class TestPpubsTools:
                 {
                     "guid": "US-1-A1",
                     "type": "US-PGPUB",
+                    "kindCode": ["A1"],
                     "publicationReferenceDocumentNumber": "1",
                     "inventionTitle": "T",
                     "datePublished": "2024-01-01T00:00:00Z",
                     "applicationNumber": "00/0",
                     "applicantName": ["X"],
+                    "assigneeName": [],
                     "mainClassificationCode": "1",
                     "ipcCodeFlattened": "A",
                     "cpcInventiveFlattened": "A",
@@ -184,12 +209,14 @@ class TestPpubsTools:
             ],
         }
         result = await src.server.ppubs_search_patents("x", verbosity="minimal")
-        # minimal drops applicationNumber, applicantName, classification fields
+        # minimal keeps guid/type/kindCode/pub#/title/date and drops the rest
         record = result["results"][0]
         assert "applicationNumber" not in record
         assert "applicantName" not in record
+        assert "assigneeName" not in record
         assert "guid" in record
         assert "inventionTitle" in record
+        assert record["kindCode"] == ["A1"]  # surfaces in minimal so callers can disambiguate
 
     @pytest.mark.asyncio
     async def test_ppubs_get_search_count(self, mock_client):
