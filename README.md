@@ -82,13 +82,16 @@ uv run python src/server.py
 |------|-------------|
 | `check_ppubs_status` | Probe PPUBS reachability — returns `{reachable, status_code, url}`. No auth. |
 
-### PPUBS (Phase 1, in development)
-
-To be added in subsequent commits as endpoints are locked against live PPUBS responses:
+### PPUBS (Phase 1)
 
 | Tool | Description |
 |------|-------------|
-| `ppubs_search_patents` | Full-text search across granted US patents + published applications. |
+| `ppubs_search_patents` | Full-text search across granted US patents + published applications. PPUBS BRS query syntax (e.g. `graphene`, `(\"6103599\").pn.`). |
+
+Coming next:
+
+| Tool | Description |
+|------|-------------|
 | `ppubs_get_patent_by_number` | Fetch one record by publication number. |
 
 ### ODP (Phase 2, deferred)

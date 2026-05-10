@@ -20,11 +20,29 @@ logging.basicConfig(
 # ── Response field filtering ──
 
 RESPONSE_FIELDS: dict[str, dict[str, Optional[list[str]]]] = {
-    # Populated as Phase 1 (PPUBS) tools land. Keys to expect:
-    #   "patent_summary"  — search-result row shape
-    #   "patent_detail"   — full record shape from get-by-number
-    # Phase 2 (ODP) adds: "application_summary", "application_detail",
-    # "continuity", "transaction".
+    "patent_summary": {
+        "minimal": [
+            "guid",
+            "type",
+            "publicationReferenceDocumentNumber",
+            "inventionTitle",
+            "datePublished",
+        ],
+        "standard": [
+            "guid",
+            "type",
+            "publicationReferenceDocumentNumber",
+            "applicationNumber",
+            "inventionTitle",
+            "datePublished",
+            "applicantName",
+            "mainClassificationCode",
+            "ipcCodeFlattened",
+            "cpcInventiveFlattened",
+            "applicationFilingDate",
+        ],
+        "full": None,
+    },
 }
 
 VALID_VERBOSITY_LEVELS = {"minimal", "standard", "full"}
@@ -150,6 +168,45 @@ async def check_ppubs_status() -> dict:
     """Foundation-slice tool — verifies PPUBS reachability."""
     client = _get_client()
     return await client.check_ppubs_status()
+
+
+@mcp.tool(
+    "ppubs_search_patents",
+    description=(
+        "Full-text search of US granted patents and published applications via "
+        "USPTO Patent Public Search (ppubs.uspto.gov). No auth required. "
+        "Query syntax follows PPUBS BRS — e.g. 'graphene', 'graphene AND "
+        "battery', '(\"6103599\").pn.'. Default sources: US-PGPUB (published "
+        "applications), USPAT (granted patents), USOCR (OCR'd older patents). "
+        "Returns a paginated result envelope with verbosity-filtered records."
+    ),
+)
+async def ppubs_search_patents(
+    query: str,
+    limit: int = 10,
+    start: int = 0,
+    sort: str = "date_publ desc",
+    sources: Optional[list[str]] = None,
+    verbosity: str = "standard",
+) -> dict:
+    """Search PPUBS and return a paginated, verbosity-filtered result envelope."""
+    client = _get_client()
+    payload = await client.ppubs_search_patents(
+        query=query,
+        limit=limit,
+        start=start,
+        sort=sort,
+        sources=sources,
+    )
+    patents = payload.get("patents") or []
+    return {
+        "total": payload.get("totalResults"),
+        "num_found": payload.get("numFound"),
+        "page": payload.get("page"),
+        "per_page": payload.get("perPage"),
+        "total_pages": payload.get("totalPages"),
+        "results": _filter_response(patents, "patent_summary", verbosity),
+    }
 
 
 # ── Transport resolution ──

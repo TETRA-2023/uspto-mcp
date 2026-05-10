@@ -1,24 +1,46 @@
 """USPTO data-source client.
 
-Phase 1 covers PPUBS (Patent Public Search) — no auth, full-text search of
-granted US patents and published applications. Phase 2 will add ODP
-(Open Data Portal) endpoints behind ``USPTO_ODP_API_KEY``.
+Phase 1 covers PPUBS (Patent Public Search) at ``ppubs.uspto.gov`` — no auth,
+full-text search of granted US patents and published applications. Phase 2
+will add ODP (Open Data Portal) endpoints behind ``USPTO_ODP_API_KEY``.
 
-This scaffold ships with one foundation-slice operation
-(:meth:`UsptoClient.check_ppubs_status`) that proves wiring end-to-end.
-PPUBS endpoint signatures (search, get-by-number) are locked in subsequent
-``feat:`` commits against probed live responses, so the scaffold does not
-guess them.
+PPUBS protocol notes (locked 2026-05-10 against live probe):
+
+* The wire API lives under ``/api/`` and is reverse-engineered from the
+  ``/pubwebapp/`` SPA. Each request needs three correlated bits of
+  authentication state:
+    - cookies seeded by ``GET /pubwebapp/``,
+    - a ``caseId`` integer returned in the body of
+      ``POST /api/users/me/session`` (request body literal: integer ``-1``),
+    - an ``X-Access-Token`` header value also returned by that endpoint.
+* Sessions time out at 1800 s (per the session response's
+  ``sessionTimeOutTime``). We cache the session for 25 min and re-establish
+  on first 403 (no exponential retry — a single re-auth covers the common
+  expiry case).
+* Search uses two endpoints in sequence: ``POST /api/searches/counts``
+  returns a count and a term graph; ``POST /api/searches/searchWithBeFamily``
+  returns the actual records. For Phase 1's ``search_patents`` we go
+  straight to ``searchWithBeFamily`` since the response payload already
+  includes ``numFound``/``totalResults`` — the counts call is only useful
+  when the operator wants the count without the records.
+* Default sources are the three PPUBS databases: ``US-PGPUB`` (published
+  applications), ``USPAT`` (granted patents), ``USOCR`` (OCR'd older
+  patents).
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from datetime import datetime, timedelta
+from typing import Any, Optional
 
 import httpx
 
 logger = logging.getLogger(__name__)
+
+PPUBS_USER_AGENT = "tetra-uspto-mcp/1.0"
+PPUBS_SESSION_TTL = timedelta(minutes=25)
+PPUBS_DEFAULT_SOURCES = ("US-PGPUB", "USPAT", "USOCR")
 
 
 class UsptoAPIError(Exception):
@@ -47,11 +69,22 @@ class UsptoClient:
         self.odp_url = odp_url.rstrip("/")
         self._odp_api_key = odp_api_key
 
+        # PPUBS expects cookies + Origin/Referer pinned to /pubwebapp/.
         self._ppubs = httpx.AsyncClient(
             base_url=self.ppubs_url,
-            headers={"Accept": "application/json", "User-Agent": "tetra-uspto-mcp/0.1"},
+            headers={
+                "X-Requested-With": "XMLHttpRequest",
+                "User-Agent": PPUBS_USER_AGENT,
+                "Origin": self.ppubs_url,
+                "Referer": f"{self.ppubs_url}/pubwebapp/",
+                "Accept": "application/json",
+            },
             timeout=30.0,
+            follow_redirects=True,
         )
+        self._ppubs_case_id: Optional[int] = None
+        self._ppubs_token: Optional[str] = None
+        self._ppubs_session_expires_at: Optional[datetime] = None
 
         self._odp: Optional[httpx.AsyncClient] = None
         if odp_api_key:
@@ -59,7 +92,7 @@ class UsptoClient:
                 base_url=self.odp_url,
                 headers={
                     "Accept": "application/json",
-                    "User-Agent": "tetra-uspto-mcp/0.1",
+                    "User-Agent": PPUBS_USER_AGENT,
                     "X-API-KEY": odp_api_key,
                 },
                 timeout=30.0,
@@ -75,6 +108,71 @@ class UsptoClient:
     def has_odp(self) -> bool:
         """True iff an ODP API key was provided at construction."""
         return self._odp is not None
+
+    # ── PPUBS session ──
+
+    async def _establish_ppubs_session(self) -> None:
+        """Open a fresh PPUBS session.
+
+        Resets cookie jar, hits ``/pubwebapp/`` to seed cookies, then POSTs
+        ``-1`` to ``/api/users/me/session`` to obtain ``caseId`` and
+        ``X-Access-Token``. Stores both for use by subsequent search calls.
+        """
+        self._ppubs.cookies = httpx.Cookies()
+
+        await self._ppubs.get("/pubwebapp/")
+
+        response = await self._ppubs.post(
+            "/api/users/me/session",
+            json=-1,
+            headers={"X-Access-Token": "null"},
+        )
+        if response.status_code != 200:
+            raise UsptoAPIError(
+                f"PPUBS session creation failed: {response.text[:200]}",
+                status_code=response.status_code,
+            )
+
+        body = response.json()
+        try:
+            self._ppubs_case_id = int(body["userCase"]["caseId"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise UsptoAPIError(
+                f"PPUBS session response missing userCase.caseId: {body!r}"
+            ) from exc
+
+        token = response.headers.get("x-access-token") or response.headers.get("X-Access-Token")
+        if not token:
+            raise UsptoAPIError("PPUBS session response missing X-Access-Token header")
+        self._ppubs_token = token
+        self._ppubs.headers["X-Access-Token"] = token
+        self._ppubs_session_expires_at = datetime.now() + PPUBS_SESSION_TTL
+        logger.info("PPUBS session established (caseId=%s)", self._ppubs_case_id)
+
+    async def _ensure_ppubs_session(self) -> None:
+        """Establish or reuse a cached PPUBS session."""
+        if (
+            self._ppubs_case_id is not None
+            and self._ppubs_session_expires_at is not None
+            and datetime.now() < self._ppubs_session_expires_at
+        ):
+            return
+        await self._establish_ppubs_session()
+
+    async def _ppubs_post(self, path: str, json_body: Any) -> httpx.Response:
+        """POST to a PPUBS endpoint with one auto-retry on session expiry.
+
+        Reauthenticates and retries once on 403; everything else is returned
+        as-is for the caller to interpret.
+        """
+        response = await self._ppubs.post(path, json=json_body)
+        if response.status_code == 403:
+            logger.info("PPUBS returned 403 — re-establishing session and retrying once")
+            await self._establish_ppubs_session()
+            response = await self._ppubs.post(path, json=json_body)
+        return response
+
+    # ── PPUBS reachability ──
 
     async def check_ppubs_status(self) -> dict:
         """Probe PPUBS root to confirm reachability.
@@ -104,3 +202,70 @@ class UsptoClient:
         """Verify USPTO data-source connectivity by probing PPUBS."""
         result = await self.check_ppubs_status()
         return bool(result.get("reachable"))
+
+    # ── PPUBS search ──
+
+    async def ppubs_search_patents(
+        self,
+        query: str,
+        *,
+        limit: int = 10,
+        start: int = 0,
+        sort: str = "date_publ desc",
+        sources: Optional[list[str]] = None,
+        plurals: bool = True,
+        british_equivalents: bool = True,
+        default_operator: str = "OR",
+    ) -> dict:
+        """Run a PPUBS search and return the parsed response.
+
+        Returns the raw PPUBS payload — top-level keys include ``patents``
+        (list of result records), ``numFound``, ``totalResults``, ``page``,
+        ``perPage``, ``totalPages``. The server layer is responsible for
+        verbosity-filtering the per-record fields.
+        """
+        await self._ensure_ppubs_session()
+
+        if sources is None:
+            sources = list(PPUBS_DEFAULT_SOURCES)
+
+        query_block = {
+            "caseId": self._ppubs_case_id,
+            "hl_snippets": "2",
+            "op": default_operator,
+            "q": query,
+            "queryName": query,
+            "highlights": "1",
+            "qt": "brs",
+            "spellCheck": False,
+            "viewName": "tile",
+            "plurals": plurals,
+            "britishEquivalents": british_equivalents,
+            "databaseFilters": [{"databaseName": s, "countryCodes": []} for s in sources],
+            "searchType": 1,
+            "ignorePersist": True,
+            "userEnteredQuery": query,
+        }
+        body = {
+            "start": start,
+            "pageCount": min(max(limit, 1), 500),
+            "sort": sort,
+            "docFamilyFiltering": "familyIdFiltering",
+            "searchType": 1,
+            "familyIdEnglishOnly": True,
+            "familyIdFirstPreferred": "US-PGPUB",
+            "familyIdSecondPreferred": "USPAT",
+            "familyIdThirdPreferred": "FPRS",
+            "showDocPerFamilyPref": "showEnglish",
+            "queryId": 0,
+            "tagDocSearch": False,
+            "query": query_block,
+        }
+
+        response = await self._ppubs_post("/api/searches/searchWithBeFamily", body)
+        if response.status_code != 200:
+            raise UsptoAPIError(
+                f"PPUBS search failed: {response.text[:200]}",
+                status_code=response.status_code,
+            )
+        return response.json()
