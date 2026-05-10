@@ -361,10 +361,14 @@ async def ppubs_search_patents(
         "**abstractHtml**, **claimsHtml**, full per-inventor names + per-"
         "assignee metadata + locations, full classification (CPC/IPC/USPC "
         "flattened), continuity data, examiners, legal firm, and family "
-        "identifier. Accepts granted-patent numbers (e.g. '6103599', 'US "
-        "6,103,599') and published-application numbers (e.g. '20260126277', "
-        "'US 2026/0126277'); strips commas/whitespace and an optional 'US ' "
-        "prefix. Returns {found: false} if no match. No auth required."
+        "identifier. Accepts the bare pub# (e.g. '6103599' for granted, "
+        "'20260126277' for published applications) AND the GUID-shaped form "
+        "returned in search results' `guid` field (e.g. 'US-6103599-A', "
+        "'US-20260121151-A1') — kind-code suffix is stripped automatically. "
+        "Also tolerates commas/whitespace/'US ' prefix. To call this tool, "
+        "you can pass either `record.publicationReferenceDocumentNumber` or "
+        "`record.guid` from a `ppubs_search_patents` result. Returns "
+        "{found: false} if no match. No auth required."
     ),
 )
 async def ppubs_get_patent_by_number(

@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from datetime import datetime, timedelta
 from typing import Any, Optional
 
@@ -380,12 +381,30 @@ class UsptoClient:
             )
         return response.json()
 
+    # Trailing kind code on PPUBS GUIDs: -A, -A1, -A2, -B, -B1, -B2, -E,
+    # -P, -P1, -P2, -P3, -S, -S1 etc. Always: dash + single uppercase letter
+    # + optional single digit. Anchored to end of string.
+    _KIND_CODE_SUFFIX_RE = re.compile(r"-[A-Z]\d?$")
+
     @staticmethod
     def _normalize_publication_number(value: str) -> str:
-        """Strip commas, whitespace, and an optional leading 'US' from a publication number."""
+        """Reduce a publication-number-shaped input to its bare PPUBS pub#.
+
+        Accepts (and strips) any of:
+          * commas: ``"6,103,599"`` -> ``"6103599"``
+          * leading ``US``/``US ``/``US-``: ``"US 6103599"`` -> ``"6103599"``
+          * trailing PPUBS kind code: ``"-A"``, ``"-A1"``, ``"-B2"``, etc.
+            (so search-result ``guid`` values like ``"US-20260121151-A1"``
+            and ``"US-6103599-A"`` round-trip cleanly to ``"20260121151"`` /
+            ``"6103599"``).
+
+        Return value is the bare digits PPUBS expects in the BRS ``.pn.``
+        field. Idempotent — passing an already-bare number is a no-op.
+        """
         cleaned = str(value).replace(",", "").strip()
         if cleaned.upper().startswith("US"):
             cleaned = cleaned[2:].lstrip(" -")
+        cleaned = UsptoClient._KIND_CODE_SUFFIX_RE.sub("", cleaned)
         return cleaned
 
     async def ppubs_get_patent_by_number(self, publication_number: str) -> Optional[dict]:

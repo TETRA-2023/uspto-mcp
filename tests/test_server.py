@@ -283,6 +283,29 @@ class TestPpubsTools:
         mock_client.ppubs_count_patents.assert_called_once_with(query="graphene", sources=["USPAT"])
 
 
+class TestPublicationNumberNormalization:
+    @pytest.mark.parametrize(
+        "raw,expected",
+        [
+            ("6103599", "6103599"),
+            ("6,103,599", "6103599"),
+            ("US 6,103,599", "6103599"),
+            ("US-6103599", "6103599"),
+            ("US-6103599-A", "6103599"),
+            ("US-20260121151-A1", "20260121151"),
+            ("US-20260126277-A1", "20260126277"),
+            ("US 2026/0126277", "2026/0126277"),  # slash form unmodified
+            ("20260121151", "20260121151"),
+            ("US-1234567-B2", "1234567"),
+            ("US-7000000-E", "7000000"),
+            ("US-PP12345-P3", "PP12345"),  # plant patent
+            ("  US-6103599-A  ", "6103599"),  # whitespace
+        ],
+    )
+    def test_normalize(self, raw, expected):
+        assert UsptoClient._normalize_publication_number(raw) == expected
+
+
 class TestRateLimitParsing:
     def test_parse_retry_after_uspto_header(self):
         resp = httpx.Response(429, headers={"x-rate-limit-retry-after-seconds": "10"})
