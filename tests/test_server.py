@@ -84,8 +84,13 @@ class TestPpubsTools:
                     "mainClassificationCode": "2/2",
                     "ipcCodeFlattened": "G06F1/00",
                     "cpcInventiveFlattened": "G06F1/00",
+                    "cpcAdditionalFlattened": "G06F1/01",
+                    "familyIdentifierCur": 12345,
+                    "primaryExaminer": "Smith; John",
+                    "score": 9.876,
                     "applicationFilingDate": ["2018-01-01T00:00:00Z"],
                     "frontPageStart": 1,
+                    "datePublishedKwicHits": ["2020"],  # KWIC noise — must be filtered out
                 },
             ],
         }
@@ -106,6 +111,13 @@ class TestPpubsTools:
         assert second["inventorsShort"] == "Doe; Jane et al."
         assert second["assigneeName"] == ["Acme Corp"]
         assert second["kindCode"] == ["B2"]
+        assert second["familyIdentifierCur"] == 12345
+        assert second["primaryExaminer"] == "Smith; John"
+        assert second["score"] == 9.876
+        assert second["cpcAdditionalFlattened"] == "G06F1/01"
+        # KWIC-noise fields must not survive standard filter
+        assert "datePublishedKwicHits" not in second
+        assert "frontPageStart" not in second
         mock_client.ppubs_search_patents.assert_called_once_with(
             query="graphene", limit=2, start=0, sort="date_publ desc", sources=None
         )
@@ -140,7 +152,19 @@ class TestPpubsTools:
             "claimsEnd": 11,
             "specificationStart": 7,
             "specificationEnd": 10,
+            "drawingsStart": 3,
+            "drawingsEnd": 6,
+            "continuityData": ["This application claims the benefit of..."],
+            "primaryExaminer": "Mulpuri; Savitri",
+            "assistantExaminer": None,
+            "legalFirmName": ["Townsend and Townsend and Crew LLP"],
+            "attorneyName": None,
+            "numberOfClaims": "28",
+            "numberOfDrawingSheets": "4",
+            "numberOfFigures": "7",
             "extraField": "should be stripped at standard",
+            "abstractedPublicationDerwent": "noise",  # Derwent metadata — must be filtered
+            "applicationFilingDateKwicHits": ["1998"],  # KWIC noise — must be filtered
         }
         result = await src.server.ppubs_get_patent_by_number("6103599")
         assert result["found"] is True
@@ -151,7 +175,17 @@ class TestPpubsTools:
         assert record["inventorsShort"] == "Henley; Francois J. et al."
         assert record["inventorsName"] == ["Henley; Francois J.", "Cheung; Nathan"]
         assert record["abstractHtml"].startswith("The present invention")
-        assert "extraField" not in record  # standard verbosity strips unregistered fields
+        assert record["legalFirmName"] == ["Townsend and Townsend and Crew LLP"]
+        assert record["continuityData"] == ["This application claims the benefit of..."]
+        assert record["primaryExaminer"] == "Mulpuri; Savitri"
+        assert record["numberOfClaims"] == "28"
+        assert record["numberOfDrawingSheets"] == "4"
+        assert record["drawingsStart"] == 3
+        assert record["drawingsEnd"] == 6
+        # Standard verbosity strips: arbitrary keys, KWIC noise, Derwent metadata
+        assert "extraField" not in record
+        assert "abstractedPublicationDerwent" not in record
+        assert "applicationFilingDateKwicHits" not in record
         mock_client.ppubs_get_patent_by_number.assert_called_once_with("6103599")
 
     @pytest.mark.asyncio

@@ -20,12 +20,31 @@ logging.basicConfig(
 # ── Response field filtering ──
 
 RESPONSE_FIELDS: dict[str, dict[str, Optional[list[str]]]] = {
-    # patent_summary covers the per-record shape returned by
-    # POST /api/searches/searchWithBeFamily. Field naming gotchas:
-    # inventorsShort (compact "Doe; Jane et al." string) is the search-side
-    # inventor field — it's empty for many US-PGPUB applications because
-    # inventor metadata fully populates only at grant; patent_detail has
-    # the richer inventorsName list.
+    # patent_summary covers per-record shape from POST /api/searches/
+    # searchWithBeFamily (89 raw fields per record).
+    #
+    # Tier rules:
+    #  minimal — disambiguating ID line: guid/type/kindCode + pub# + title
+    #            + date. 6 fields. Fits one display row.
+    #  standard — patent-attorney triage view: + appl#/dates, key persons
+    #            (inventorsShort/applicantName/assigneeName), modern + legacy
+    #            classification (CPC/IPC/USPC flattened only), family ID,
+    #            primaryExaminer, search relevance score. 18 fields.
+    #            Excludes: KWIC highlights, *Highlights duplicates, pf*
+    #            preferred-publication variants, image/Solr internals,
+    #            Derwent indexing.
+    #  full —    no filter (89 fields). Use for debugging or rare access
+    #            to PCT/Hague/foreign-citation/sequence/biological data.
+    #
+    # Field-naming gotchas:
+    #  - inventorsShort: "Doe; Jane et al." compact string. Often empty for
+    #    US-PGPUB (inventor data populates fully at grant).
+    #  - assigneeName: list. Empty pre-grant on US-PGPUB; use applicantName
+    #    for application-time owner.
+    #  - kindCode: list, e.g. ["A1"] (PGPUB), ["B2"] (granted), ["A"]
+    #    (older grant), ["E"] (reissue).
+    #  - publicationReferenceDocumentNumber appears in 3 forms in the raw
+    #    response (canonical, "1", "One"); we surface the canonical.
     "patent_summary": {
         "minimal": [
             "guid",
@@ -36,27 +55,66 @@ RESPONSE_FIELDS: dict[str, dict[str, Optional[list[str]]]] = {
             "datePublished",
         ],
         "standard": [
+            # ID
             "guid",
             "type",
             "kindCode",
             "publicationReferenceDocumentNumber",
             "applicationNumber",
+            # Title + dates
             "inventionTitle",
             "datePublished",
+            "applicationFilingDate",
+            # People
             "inventorsShort",
             "applicantName",
             "assigneeName",
+            # Classification (modern + legacy)
             "mainClassificationCode",
             "ipcCodeFlattened",
             "cpcInventiveFlattened",
-            "applicationFilingDate",
+            "cpcAdditionalFlattened",
+            # Family
+            "familyIdentifierCur",
+            # Examiner (often null on US-PGPUB; populates at examination)
+            "primaryExaminer",
+            # Search relevance
+            "score",
         ],
         "full": None,
     },
-    # patent_detail covers GET /api/patents/highlight/{guid}. inventorsName
-    # is the full-name list (per-inventor); inventorsShort is the compact
-    # display string. Both are surfaced at standard so patent-attorney
-    # workflows have inventor metadata without falling back to full.
+    # patent_detail covers GET /api/patents/highlight/{guid} (450 raw
+    # fields top-level — 5× the search response).
+    #
+    # Tier rules:
+    #  minimal — disambiguating ID + lead inventor + abstract HTML.
+    #            8 fields. Suitable for quick "what is this patent?"
+    #            answers without dumping claims.
+    #  standard — full patent-attorney record: ID, dates, all people
+    #            (inventors short+full, applicant, assignee with location),
+    #            modern + legacy classification (flattened only), family
+    #            + continuity, examiners, legal firm, counts (claims/
+    #            drawings/figures), abstract + claims HTML, page-range
+    #            pointers for the four useful sections (abstract / claims
+    #            / spec / drawings). 37 fields.
+    #            Excludes: KWIC highlights, the 8 niche page pointers
+    #            (amend/bib/cert*/frontPage/ptab/searchReport/supplemental),
+    #            sub-heading HTML M0-M6, full per-inventor address arrays,
+    #            applicant address arrays, raw classification lists when
+    #            *Flattened says it concisely, Derwent / PCT / Hague /
+    #            foreign-citation metadata.
+    #  full —    no filter (450 fields).
+    #
+    # Field-naming gotchas:
+    #  - inventorsName: list of full names — detail-only.
+    #  - inventorsShort: compact display — detail + summary.
+    #  - legalFirmName: typically populated; attorneyName / principal-
+    #    AttorneyName are often null even on granted patents.
+    #  - continuityData: free-text on granted, structured chain on PGPUB.
+    #  - numberOfClaims/Drawings/Figures: null on PGPUB, populated on
+    #    granted (assigned at examination).
+    #  - familyIdentifierCur: int (older patents) or 13-digit int
+    #    (newer applications).
     "patent_detail": {
         "minimal": [
             "guid",
@@ -69,6 +127,7 @@ RESPONSE_FIELDS: dict[str, dict[str, Optional[list[str]]]] = {
             "abstractHtml",
         ],
         "standard": [
+            # ID
             "guid",
             "type",
             "kindCode",
@@ -76,6 +135,7 @@ RESPONSE_FIELDS: dict[str, dict[str, Optional[list[str]]]] = {
             "datePublished",
             "applicationNumber",
             "applicationFilingDate",
+            # People — full + compact + concise location
             "inventorsShort",
             "inventorsName",
             "applicantName",
@@ -83,19 +143,35 @@ RESPONSE_FIELDS: dict[str, dict[str, Optional[list[str]]]] = {
             "assigneeCity",
             "assigneeState",
             "assigneeCountry",
+            # Classification (modern + legacy + USPC, flattened only)
             "mainClassificationCode",
             "ipcCodeFlattened",
             "cpcInventiveFlattened",
             "cpcAdditionalFlattened",
+            # Family + continuity
             "familyIdentifierCur",
+            "continuityData",
+            # Examiners + legal firm
+            "primaryExaminer",
+            "assistantExaminer",
+            "legalFirmName",
+            "attorneyName",
+            # Counts (concise scalar metadata)
+            "numberOfClaims",
+            "numberOfDrawingSheets",
+            "numberOfFigures",
+            # Heavy text (the two patent-attorneys actually read)
             "abstractHtml",
             "claimsHtml",
+            # Page-range pointers — 4 useful sections only (PDF assembly)
             "abstractStart",
             "abstractEnd",
             "claimsStart",
             "claimsEnd",
             "specificationStart",
             "specificationEnd",
+            "drawingsStart",
+            "drawingsEnd",
         ],
         "full": None,
     },
