@@ -27,7 +27,7 @@ src/
 
 ## Endpoint locking
 
-Phase 1 tool signatures (`ppubs_search_patents`, `ppubs_get_patent_by_number`) are not yet implemented. They are added per-commit as endpoints are locked against probed live PPUBS responses or by porting from `riemannzeta/patent_mcp_server` (MIT). Do not guess endpoint paths or request shapes — probe first.
+PPUBS endpoints are reverse-engineered. Wire-protocol notes (auth flow, request shapes, retry behaviour) live in BM at `tetra/uspto/uspto-ppubs-wire-protocol-locked-2026-05-10-against-live-probe`; the full per-record field catalogue with category/tier/gotchas is in [`docs/PPUBS_FIELDS.md`](docs/PPUBS_FIELDS.md). When PPUBS evolves, both `RESPONSE_FIELDS` in `src/server.py` AND `docs/PPUBS_FIELDS.md` must be updated together. Do not guess endpoint paths, request shapes, or field names — probe first.
 
 ## Development Setup
 

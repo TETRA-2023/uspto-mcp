@@ -104,7 +104,7 @@ Loaded only when `USPTO_ODP_API_KEY` is set:
 | `odp_get_transactions` | Prosecution-history events. |
 | `odp_get_assignment` | Chain-of-title. |
 
-All query tools support a `verbosity` parameter: `minimal`, `standard` (default), or `full`.
+All query tools support a `verbosity` parameter: `minimal`, `standard` (default), or `full`. Field membership per tier (and the full PPUBS field catalogue with category, tier annotation, and field-naming gotchas) is documented in [`docs/PPUBS_FIELDS.md`](docs/PPUBS_FIELDS.md).
 
 ## Development
 
