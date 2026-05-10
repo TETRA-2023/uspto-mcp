@@ -43,6 +43,45 @@ RESPONSE_FIELDS: dict[str, dict[str, Optional[list[str]]]] = {
         ],
         "full": None,
     },
+    "patent_detail": {
+        "minimal": [
+            "guid",
+            "type",
+            "inventionTitle",
+            "datePublished",
+            "applicationNumber",
+            "kindCode",
+            "abstractHtml",
+        ],
+        "standard": [
+            "guid",
+            "type",
+            "inventionTitle",
+            "datePublished",
+            "applicationNumber",
+            "applicationFilingDate",
+            "kindCode",
+            "applicantName",
+            "assigneeName",
+            "assigneeCity",
+            "assigneeState",
+            "assigneeCountry",
+            "mainClassificationCode",
+            "ipcCodeFlattened",
+            "cpcInventiveFlattened",
+            "cpcAdditionalFlattened",
+            "familyIdentifierCur",
+            "abstractHtml",
+            "claimsHtml",
+            "abstractStart",
+            "abstractEnd",
+            "claimsStart",
+            "claimsEnd",
+            "specificationStart",
+            "specificationEnd",
+        ],
+        "full": None,
+    },
 }
 
 VALID_VERBOSITY_LEVELS = {"minimal", "standard", "full"}
@@ -206,6 +245,37 @@ async def ppubs_search_patents(
         "per_page": payload.get("perPage"),
         "total_pages": payload.get("totalPages"),
         "results": _filter_response(patents, "patent_summary", verbosity),
+    }
+
+
+@mcp.tool(
+    "ppubs_get_patent_by_number",
+    description=(
+        "Look up a single US patent or published application by publication "
+        "number on USPTO Patent Public Search (ppubs.uspto.gov). Accepts "
+        "granted-patent numbers (e.g. '6103599', 'US 6,103,599') and "
+        "published-application numbers (e.g. '20260126277', 'US 2026/0126277'). "
+        "Returns the full document including abstract/claims HTML, "
+        "classification, applicant/assignee metadata, and family identifier. "
+        "Returns {found: false} if no match. No auth required."
+    ),
+)
+async def ppubs_get_patent_by_number(
+    publication_number: str,
+    verbosity: str = "standard",
+) -> dict:
+    """Fetch a single PPUBS document by publication number, verbosity-filtered."""
+    client = _get_client()
+    detail = await client.ppubs_get_patent_by_number(publication_number)
+    if detail is None:
+        return {
+            "found": False,
+            "publication_number": publication_number,
+        }
+    return {
+        "found": True,
+        "publication_number": publication_number,
+        "record": _filter_response(detail, "patent_detail", verbosity),
     }
 
 

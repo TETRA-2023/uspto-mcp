@@ -87,12 +87,7 @@ uv run python src/server.py
 | Tool | Description |
 |------|-------------|
 | `ppubs_search_patents` | Full-text search across granted US patents + published applications. PPUBS BRS query syntax (e.g. `graphene`, `(\"6103599\").pn.`). |
-
-Coming next:
-
-| Tool | Description |
-|------|-------------|
-| `ppubs_get_patent_by_number` | Fetch one record by publication number. |
+| `ppubs_get_patent_by_number` | Fetch one record by publication number — accepts both granted-patent numbers (e.g. `6103599`) and published-application numbers (e.g. `20260126277`). Returns abstract + claims HTML, classification, applicant/assignee metadata, family identifier. |
 
 ### ODP (Phase 2, deferred)
 

@@ -269,3 +269,57 @@ class UsptoClient:
                 status_code=response.status_code,
             )
         return response.json()
+
+    @staticmethod
+    def _normalize_publication_number(value: str) -> str:
+        """Strip commas, whitespace, and an optional leading 'US' from a publication number."""
+        cleaned = str(value).replace(",", "").strip()
+        if cleaned.upper().startswith("US"):
+            cleaned = cleaned[2:].lstrip(" -")
+        return cleaned
+
+    async def ppubs_get_patent_by_number(self, publication_number: str) -> Optional[dict]:
+        """Look up a single PPUBS document by publication number.
+
+        Two-call flow: BRS-search ``("<pn>").pn.`` to resolve the GUID + type,
+        then GET ``/api/patents/highlight/{guid}?source=<type>`` for the full
+        document. Returns the raw highlight payload (a deep dict with
+        abstract/claims HTML, classification, applicant/assignee metadata,
+        family identifiers, page-range pointers) or ``None`` if the search
+        finds no match.
+
+        ``.pn.`` works for both granted patents (USPAT) and published
+        applications (US-PGPUB) — verified live 2026-05-10.
+        """
+        await self._ensure_ppubs_session()
+
+        pn = self._normalize_publication_number(publication_number)
+        brs = f'("{pn}").pn.'
+
+        # Step 1 — BRS search for the publication number.
+        search_payload = await self.ppubs_search_patents(query=brs, limit=1)
+        patents = search_payload.get("patents") or []
+        if not patents:
+            return None
+
+        record = patents[0]
+        guid = record.get("guid")
+        source_type = record.get("type")
+        if not guid or not source_type:
+            raise UsptoAPIError(f"PPUBS search returned a record without guid/type: {record!r}")
+
+        # Step 2 — fetch full document detail. Endpoint is GET, not POST,
+        # so the shared _ppubs_post 403-retry helper doesn't apply.
+        params = {"queryId": 1, "source": source_type, "includeSections": "true"}
+        path = f"/api/patents/highlight/{guid}"
+        response = await self._ppubs.get(path, params=params)
+        if response.status_code == 403:
+            logger.info("PPUBS highlight returned 403 — re-establishing session and retrying")
+            await self._establish_ppubs_session()
+            response = await self._ppubs.get(path, params=params)
+        if response.status_code != 200:
+            raise UsptoAPIError(
+                f"PPUBS highlight fetch failed: {response.text[:200]}",
+                status_code=response.status_code,
+            )
+        return response.json()

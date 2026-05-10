@@ -95,6 +95,71 @@ class TestPpubsTools:
         )
 
     @pytest.mark.asyncio
+    async def test_ppubs_get_patent_by_number_found(self, mock_client):
+        mock_client.ppubs_get_patent_by_number.return_value = {
+            "guid": "US-6103599-A",
+            "type": "USPAT",
+            "inventionTitle": "Planarizing technique for multilayered substrates",
+            "datePublished": "2000-08-15T00:00:00Z",
+            "applicationNumber": "09/089931",
+            "applicationFilingDate": ["1998-06-03T00:00:00Z"],
+            "kindCode": ["A"],
+            "applicantName": [],
+            "assigneeName": ["Silicon Genesis Corporation"],
+            "assigneeCity": ["Los Gatos"],
+            "assigneeState": ["CA"],
+            "assigneeCountry": [],
+            "mainClassificationCode": "438/459",
+            "ipcCodeFlattened": "H01L21/70",
+            "cpcInventiveFlattened": "H10P50/642;H10P90/1916;H10W10/181",
+            "cpcAdditionalFlattened": "Y10S438/977",
+            "familyIdentifierCur": 26732223,
+            "abstractHtml": "The present invention provides...",
+            "claimsHtml": "1. A method for fabricating a substrate...",
+            "abstractStart": 1,
+            "abstractEnd": 2,
+            "claimsStart": 10,
+            "claimsEnd": 11,
+            "specificationStart": 7,
+            "specificationEnd": 10,
+            "extraField": "should be stripped at standard",
+        }
+        result = await src.server.ppubs_get_patent_by_number("6103599")
+        assert result["found"] is True
+        assert result["publication_number"] == "6103599"
+        record = result["record"]
+        assert record["guid"] == "US-6103599-A"
+        assert record["assigneeName"] == ["Silicon Genesis Corporation"]
+        assert record["abstractHtml"].startswith("The present invention")
+        assert "extraField" not in record  # standard verbosity strips unregistered fields
+        mock_client.ppubs_get_patent_by_number.assert_called_once_with("6103599")
+
+    @pytest.mark.asyncio
+    async def test_ppubs_get_patent_by_number_not_found(self, mock_client):
+        mock_client.ppubs_get_patent_by_number.return_value = None
+        result = await src.server.ppubs_get_patent_by_number("0")
+        assert result == {"found": False, "publication_number": "0"}
+
+    @pytest.mark.asyncio
+    async def test_ppubs_get_patent_by_number_minimal(self, mock_client):
+        mock_client.ppubs_get_patent_by_number.return_value = {
+            "guid": "US-6103599-A",
+            "type": "USPAT",
+            "inventionTitle": "Planarizing technique",
+            "datePublished": "2000-08-15T00:00:00Z",
+            "applicationNumber": "09/089931",
+            "kindCode": ["A"],
+            "abstractHtml": "Abstract...",
+            "claimsHtml": "Claims...",
+            "assigneeName": ["Silicon Genesis Corporation"],
+        }
+        result = await src.server.ppubs_get_patent_by_number("6103599", verbosity="minimal")
+        record = result["record"]
+        assert "abstractHtml" in record
+        assert "claimsHtml" not in record  # minimal drops claims
+        assert "assigneeName" not in record  # minimal drops assignee
+
+    @pytest.mark.asyncio
     async def test_ppubs_search_patents_minimal(self, mock_client):
         mock_client.ppubs_search_patents.return_value = {
             "numFound": 1,
