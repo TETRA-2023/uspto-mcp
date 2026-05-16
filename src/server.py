@@ -315,7 +315,11 @@ async def check_ppubs_status() -> dict:
         "exact-phrase matching, double-quote: '\"graphene battery\"'. When a "
         "user gives a plain English multi-word topic ('graphene battery', "
         "'CRISPR gene editing', 'quantum dot displays'), rewrite to AND form "
-        "before calling: 'graphene AND battery', etc. Default sources: "
+        "before calling: 'graphene AND battery', etc. **Do NOT quote individual "
+        "AND operands** — 'AI AND Agent AND Patent AND Writing' returns tens of "
+        'thousands of results where \'"AI Agent" AND "Patent Writing"\' returns '
+        "zero. Only use double-quotes when you specifically need strict phrase "
+        "matching on the exact word sequence. Default sources: "
         "US-PGPUB (published applications), USPAT (granted patents), USOCR "
         "(OCR'd older patents). Returns a paginated envelope of summary-tier "
         "records (id, title, applicant, classification, dates, family ID — "
@@ -347,7 +351,7 @@ async def ppubs_search_patents(
         sources=sources,
     )
     patents = payload.get("patents") or []
-    return {
+    result = {
         "total": payload.get("totalResults"),
         "num_found": payload.get("numFound"),
         "page": payload.get("page"),
@@ -355,6 +359,12 @@ async def ppubs_search_patents(
         "total_pages": payload.get("totalPages"),
         "results": _filter_response(patents, "patent_summary", verbosity),
     }
+    if result["total"] == 0:
+        result["query_hint"] = (
+            'Zero results — if the query used quoted phrases (e.g. "AI Agent"), '
+            "retry with bare AND terms (e.g. AI AND Agent AND Patent AND Writing)."
+        )
+    return result
 
 
 @mcp.tool(
@@ -409,6 +419,8 @@ async def ppubs_get_patent_by_number(
         "results), NOT both. For intersection, use 'graphene AND battery' "
         "(~53k). For exact phrase, double-quote: '\"graphene battery\"'. When "
         "the user gives a plain multi-word topic, rewrite to AND form first. "
+        "**Do NOT quote individual AND operands** — 'AI AND Agent' returns "
+        "results where '\"AI Agent\"' (exact phrase) often returns zero. "
         "Default sources: US-PGPUB, USPAT, USOCR. Returns {total, query, "
         "sources}. After this, call `ppubs_search_patents` to list records."
     ),
@@ -425,11 +437,17 @@ async def ppubs_get_search_count(
         for f in (payload.get("databaseFilters") or [])
         if f.get("databaseName")
     ]
-    return {
+    result = {
         "total": payload.get("numResults"),
         "query": payload.get("q") or query,
         "sources": echoed or list(PPUBS_DEFAULT_SOURCES),
     }
+    if result["total"] == 0:
+        result["query_hint"] = (
+            'Zero results — if the query used quoted phrases (e.g. "AI Agent"), '
+            "retry with bare AND terms (e.g. AI AND Agent)."
+        )
+    return result
 
 
 # ── Transport resolution ──
