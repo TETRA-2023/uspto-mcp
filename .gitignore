@@ -34,3 +34,6 @@ venv/
 # IDE
 .vscode/
 .idea/
+
+# Private test scripts (not for public repo)
+tests/golden_run.py
