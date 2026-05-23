@@ -512,6 +512,94 @@ async def search_patents_with_details(
 
 
 @mcp.tool(
+    "find_patents_by",
+    description=(
+        "Structured search of US patents using typed BRS field filters — inventor surname, "
+        "assignee/applicant name, CPC classification code, and/or publication year range. "
+        "Use this instead of `ppubs_search_patents` when you know specific metadata (e.g. "
+        "'patents by inventor Smith', 'IBM patents in CPC class G06N', 'patents filed "
+        "2020–2023'). All parameters are optional but at least one must be provided. "
+        "Multiple parameters are AND-combined. Field code details: inventor matches on "
+        "last name only; assignee covers both granted (USPAT) and published applications "
+        "(US-PGPUB) via the `.as.` field; CPC class accepts any level — a broad code "
+        "like 'G06N' is automatically truncated to match all subclasses, while a specific "
+        "subclass like 'G06N3/04' is matched exactly; year_from/year_to are inclusive "
+        "bounds on publication date (January 1 / December 31). Returns a paginated "
+        "envelope (total, results[]) with the same standard-verbosity shape as "
+        "`ppubs_search_patents` (~18 fields: id, title, people, classification, dates, "
+        "score). Pass verbosity='full' for all 89 raw search-result fields."
+    ),
+)
+async def find_patents_by(
+    inventor: Optional[str] = None,
+    assignee: Optional[str] = None,
+    cpc_class: Optional[str] = None,
+    year_from: Optional[int] = None,
+    year_to: Optional[int] = None,
+    limit: int = 10,
+    sort: str = "date_publ desc",
+    sources: Optional[list[str]] = None,
+    verbosity: str = "standard",
+) -> dict:
+    """Structured BRS field query — inventor, assignee, CPC class, date range."""
+    if not any([inventor, assignee, cpc_class, year_from, year_to]):
+        return {
+            "error": "At least one of inventor, assignee, cpc_class, year_from, or year_to must be provided."
+        }
+    client = _get_client()
+    payload = await client.find_patents_by(
+        inventor=inventor,
+        assignee=assignee,
+        cpc_class=cpc_class,
+        year_from=year_from,
+        year_to=year_to,
+        limit=limit,
+        sort=sort,
+        sources=sources,
+    )
+    patents = payload.get("patents") or []
+    return {
+        "total": payload.get("totalResults"),
+        "num_found": payload.get("numFound"),
+        "page": payload.get("page"),
+        "per_page": payload.get("perPage"),
+        "total_pages": payload.get("totalPages"),
+        "results": _filter_response(patents, "patent_summary", verbosity),
+    }
+
+
+@mcp.tool(
+    "compare_patent_landscape",
+    description=(
+        "Compare patent counts across 2–7 technology topics in a single call — "
+        "useful for competitive landscape analysis ('how many patents exist for "
+        "solid-state batteries vs graphene batteries vs supercapacitors?'). Each "
+        "topic is a plain-English phrase or BRS query; plain English is "
+        "automatically rewritten to AND form before counting ('solid state battery' "
+        "→ 'solid AND state AND battery'). All count queries run concurrently. "
+        "Returns a comparisons[] list — one entry per topic — with the topic "
+        "string, the BRS query actually used, and the total patent count. If a "
+        "single topic fails (network or rate-limit error) that entry carries an "
+        "'error' key instead of 'total', and the remaining topics still return. "
+        "Default sources: US-PGPUB, USPAT, USOCR. Rate-limit validated at N=7 "
+        "concurrent topics with zero 429s (T05 spike, 2026-05-23)."
+    ),
+)
+async def compare_patent_landscape(
+    topics: list[str],
+) -> dict:
+    """Parallel patent-count comparison across multiple topics."""
+    if len(topics) < 2:
+        return {"error": "compare_patent_landscape requires at least 2 topics."}
+    if len(topics) > 7:
+        return {
+            "error": "compare_patent_landscape supports at most 7 topics (rate-limit safe upper bound)."
+        }
+    client = _get_client()
+    return await client.compare_patent_landscape(topics=topics)
+
+
+@mcp.tool(
     "ppubs_get_search_count",
     description=(
         "Count US patents and published applications matching a query, without "

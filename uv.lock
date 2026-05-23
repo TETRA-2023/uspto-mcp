@@ -1280,7 +1280,7 @@ wheels = [
 
 [[package]]
 name = "uspto-mcp"
-version = "1.5.2"
+version = "1.7.0"
 source = { editable = "." }
 dependencies = [
     { name = "httpx" },

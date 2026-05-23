@@ -601,3 +601,166 @@ class TestTransportResolution:
 
     def test_invalid_env(self):
         assert src.server._resolve_transport(argv=[], env={"USPTO_TRANSPORT": "invalid"}) == "stdio"
+
+
+class TestFindPatentsBy:
+    @pytest.mark.asyncio
+    async def test_assignee_query_envelope(self, mock_client):
+        mock_client.find_patents_by.return_value = {
+            "numFound": 5,
+            "totalResults": 5,
+            "page": 0,
+            "perPage": 10,
+            "totalPages": 1,
+            "patents": [
+                {
+                    "guid": "US-1234567-B2",
+                    "type": "USPAT",
+                    "kindCode": ["B2"],
+                    "publicationReferenceDocumentNumber": "1234567",
+                    "inventionTitle": "Widget",
+                    "datePublished": "2020-01-01T00:00:00Z",
+                    "applicationNumber": "10/000001",
+                    "inventorsShort": "Doe; Jane et al.",
+                    "applicantName": ["Doe; Jane"],
+                    "assigneeName": ["IBM"],
+                    "mainClassificationCode": "2/2",
+                    "ipcCodeFlattened": "G06F1/00",
+                    "cpcInventiveFlattened": "G06F1/00",
+                    "score": 1.0,
+                }
+            ],
+        }
+        result = await src.server.find_patents_by(assignee="IBM")
+        assert result["total"] == 5
+        assert len(result["results"]) == 1
+        assert result["results"][0]["assigneeName"] == ["IBM"]
+        mock_client.find_patents_by.assert_called_once_with(
+            inventor=None,
+            assignee="IBM",
+            cpc_class=None,
+            year_from=None,
+            year_to=None,
+            limit=10,
+            sort="date_publ desc",
+            sources=None,
+        )
+
+    @pytest.mark.asyncio
+    async def test_no_params_returns_error_without_client_call(self, mock_client):
+        result = await src.server.find_patents_by()
+        assert "error" in result
+        mock_client.find_patents_by.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_multi_param_passthrough(self, mock_client):
+        mock_client.find_patents_by.return_value = {
+            "numFound": 2,
+            "totalResults": 2,
+            "page": 0,
+            "perPage": 10,
+            "totalPages": 1,
+            "patents": [],
+        }
+        result = await src.server.find_patents_by(
+            inventor="Smith", year_from=2020, year_to=2023, limit=5
+        )
+        assert result["total"] == 2
+        mock_client.find_patents_by.assert_called_once_with(
+            inventor="Smith",
+            assignee=None,
+            cpc_class=None,
+            year_from=2020,
+            year_to=2023,
+            limit=5,
+            sort="date_publ desc",
+            sources=None,
+        )
+
+    @pytest.mark.asyncio
+    async def test_verbosity_minimal_strips_noise(self, mock_client):
+        mock_client.find_patents_by.return_value = {
+            "numFound": 1,
+            "totalResults": 1,
+            "page": 0,
+            "perPage": 10,
+            "totalPages": 1,
+            "patents": [
+                {
+                    "guid": "US-1-A1",
+                    "type": "US-PGPUB",
+                    "kindCode": ["A1"],
+                    "publicationReferenceDocumentNumber": "1",
+                    "inventionTitle": "T",
+                    "datePublished": "2024-01-01T00:00:00Z",
+                    "applicationNumber": "00/0",
+                    "applicantName": ["X"],
+                    "assigneeName": [],
+                    "mainClassificationCode": "1",
+                    "ipcCodeFlattened": "A",
+                    "cpcInventiveFlattened": "A",
+                    "frontPageStart": 1,
+                }
+            ],
+        }
+        result = await src.server.find_patents_by(assignee="X", verbosity="minimal")
+        record = result["results"][0]
+        assert "frontPageStart" not in record
+        assert "applicationNumber" not in record
+        assert "guid" in record
+        assert "inventionTitle" in record
+
+
+class TestComparePatentLandscape:
+    @pytest.mark.asyncio
+    async def test_basic_two_topic_comparison(self, mock_client):
+        mock_client.compare_patent_landscape.return_value = {
+            "comparisons": [
+                {"topic": "graphene battery", "query_used": "graphene AND battery", "total": 53254},
+                {
+                    "topic": "solid state battery",
+                    "query_used": "solid AND state AND battery",
+                    "total": 12000,
+                },
+            ],
+            "sources": ["US-PGPUB", "USPAT", "USOCR"],
+        }
+        result = await src.server.compare_patent_landscape(
+            topics=["graphene battery", "solid state battery"]
+        )
+        assert len(result["comparisons"]) == 2
+        assert result["comparisons"][0]["total"] == 53254
+        assert result["comparisons"][1]["total"] == 12000
+        assert result["sources"] == ["US-PGPUB", "USPAT", "USOCR"]
+        mock_client.compare_patent_landscape.assert_called_once_with(
+            topics=["graphene battery", "solid state battery"]
+        )
+
+    @pytest.mark.asyncio
+    async def test_single_topic_returns_error(self, mock_client):
+        result = await src.server.compare_patent_landscape(topics=["graphene battery"])
+        assert "error" in result
+        mock_client.compare_patent_landscape.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_eight_topics_returns_error(self, mock_client):
+        result = await src.server.compare_patent_landscape(
+            topics=["t1", "t2", "t3", "t4", "t5", "t6", "t7", "t8"]
+        )
+        assert "error" in result
+        mock_client.compare_patent_landscape.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_seven_topics_allowed(self, mock_client):
+        mock_client.compare_patent_landscape.return_value = {
+            "comparisons": [
+                {"topic": f"t{i}", "query_used": f"t{i}", "total": i * 100} for i in range(1, 8)
+            ],
+            "sources": ["US-PGPUB", "USPAT", "USOCR"],
+        }
+        result = await src.server.compare_patent_landscape(
+            topics=["t1", "t2", "t3", "t4", "t5", "t6", "t7"]
+        )
+        assert "error" not in result
+        assert len(result["comparisons"]) == 7
+        mock_client.compare_patent_landscape.assert_called_once()

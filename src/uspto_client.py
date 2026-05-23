@@ -542,3 +542,105 @@ class UsptoClient:
                 details.append({"found": True, "publication_number": pn, "record": result})
 
         return {**search_payload, "details": details}
+
+    async def find_patents_by(
+        self,
+        *,
+        inventor: Optional[str] = None,
+        assignee: Optional[str] = None,
+        cpc_class: Optional[str] = None,
+        year_from: Optional[int] = None,
+        year_to: Optional[int] = None,
+        limit: int = 10,
+        start: int = 0,
+        sort: str = "date_publ desc",
+        sources: Optional[list[str]] = None,
+    ) -> dict:
+        """Build a BRS structured query from typed field inputs and run it.
+
+        Abstracts BRS field codes so callers pass bare values rather than raw
+        BRS. Field codes locked against live PPUBS probe 2026-05-23 (T06):
+
+        * ``.in.``  — inventor surname (last name only; semicolon format fails)
+        * ``.as.``  — assignee / applicant name (covers USPAT + US-PGPUB)
+        * ``.cpc.`` — CPC class; broad codes get ``$`` truncation automatically
+        * ``@pd>=`` / ``@pd<=`` — publication date bounds (YYYYMMDD)
+
+        At least one parameter must be provided; raises ``ValueError`` otherwise.
+        Clauses are combined with AND.
+        """
+        clauses: list[str] = []
+
+        if inventor:
+            clauses.append(f'("{inventor}").in.')
+        if assignee:
+            clauses.append(f'("{assignee}").as.')
+        if cpc_class:
+            cpc = cpc_class.strip().rstrip("$")
+            if "/" in cpc:
+                clauses.append(f"({cpc}).cpc.")
+            else:
+                clauses.append(f"({cpc}$).cpc.")
+        if year_from:
+            clauses.append(f"@pd>={year_from}0101")
+        if year_to:
+            clauses.append(f"@pd<={year_to}1231")
+
+        if not clauses:
+            raise ValueError(
+                "find_patents_by requires at least one of: inventor, assignee, cpc_class, year_from, year_to"
+            )
+
+        query = " AND ".join(clauses)
+        return await self.ppubs_search_patents(
+            query=query,
+            limit=limit,
+            start=start,
+            sort=sort,
+            sources=sources,
+        )
+
+    async def compare_patent_landscape(
+        self,
+        topics: list[str],
+    ) -> dict:
+        """Compare patent counts across multiple topics in a single call.
+
+        Each topic string is auto-rewritten to BRS AND form via ``_auto_brs()``
+        before counting. All count calls are fired concurrently via
+        ``asyncio.gather``. Per-item exceptions are captured rather than
+        aborting the gather.
+
+        Rate-limit validated: N=7 burst returned zero 429s at < 1s wall time
+        (T05 spike, 2026-05-23). Keep topics ≤ 7 as a safe upper bound.
+        """
+        await self._ensure_ppubs_session()
+
+        rewritten = [self._auto_brs(t) for t in topics]
+
+        raw_results = await asyncio.gather(
+            *[self.ppubs_count_patents(query=q) for q in rewritten],
+            return_exceptions=True,
+        )
+
+        comparisons: list[dict[str, Any]] = []
+        sources: Optional[list[str]] = None
+        for topic, query, result in zip(topics, rewritten, raw_results):
+            if isinstance(result, BaseException):
+                comparisons.append(
+                    {"topic": topic, "query_used": query, "total": None, "error": str(result)}
+                )
+            else:
+                total = result.get("numResults")
+                if sources is None:
+                    sources = [
+                        f.get("databaseName")
+                        for f in (result.get("databaseFilters") or [])
+                        if f.get("databaseName")
+                    ]
+                comparisons.append({"topic": topic, "query_used": query, "total": total})
+
+        return {
+            "comparisons": comparisons,
+            "sources": sources or list(PPUBS_DEFAULT_SOURCES),
+        }
