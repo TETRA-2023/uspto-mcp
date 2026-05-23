@@ -372,6 +372,115 @@ class TestAutoBrs:
         )
 
 
+class TestZeroResultAutoRetry:
+    @pytest.mark.asyncio
+    async def test_search_zero_with_phrase_triggers_auto_retry(self, mock_client):
+        mock_client.ppubs_search_patents.side_effect = [
+            {
+                "numFound": 0,
+                "totalResults": 0,
+                "page": 0,
+                "perPage": 10,
+                "totalPages": 0,
+                "patents": [],
+            },
+            {
+                "numFound": 42,
+                "totalResults": 42,
+                "page": 0,
+                "perPage": 10,
+                "totalPages": 5,
+                "patents": [],
+            },
+        ]
+        result = await src.server.ppubs_search_patents(
+            '"artificial intelligence patent prosecution agent"'
+        )
+        assert result["total"] == 0
+        assert "auto_retry" in result
+        assert result["auto_retry"]["query_used"] == (
+            "artificial AND intelligence AND patent AND prosecution AND agent"
+        )
+        assert result["auto_retry"]["total"] == 42
+        assert mock_client.ppubs_search_patents.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_search_zero_without_phrase_gives_hint(self, mock_client):
+        mock_client.ppubs_search_patents.return_value = {
+            "numFound": 0,
+            "totalResults": 0,
+            "page": 0,
+            "perPage": 10,
+            "totalPages": 0,
+            "patents": [],
+        }
+        result = await src.server.ppubs_search_patents("zzznonexistentterm")
+        assert result["total"] == 0
+        assert "query_hint" in result
+        assert "auto_retry" not in result
+        assert mock_client.ppubs_search_patents.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_search_nonzero_no_hint_no_retry(self, mock_client):
+        mock_client.ppubs_search_patents.return_value = {
+            "numFound": 5,
+            "totalResults": 5,
+            "page": 0,
+            "perPage": 10,
+            "totalPages": 1,
+            "patents": [],
+        }
+        result = await src.server.ppubs_search_patents("graphene battery")
+        assert "query_hint" not in result
+        assert "auto_retry" not in result
+
+    @pytest.mark.asyncio
+    async def test_count_zero_with_phrase_triggers_auto_retry(self, mock_client):
+        mock_client.ppubs_count_patents.side_effect = [
+            {"numResults": 0, "q": '"AI agent"', "databaseFilters": []},
+            {
+                "numResults": 1346,
+                "q": "AI AND agent",
+                "databaseFilters": [
+                    {"databaseName": "US-PGPUB", "countryCodes": []},
+                    {"databaseName": "USPAT", "countryCodes": []},
+                    {"databaseName": "USOCR", "countryCodes": []},
+                ],
+            },
+        ]
+        result = await src.server.ppubs_get_search_count('"AI agent"')
+        assert result["total"] == 0
+        assert "auto_retry" in result
+        assert result["auto_retry"]["query_used"] == "AI AND agent"
+        assert result["auto_retry"]["total"] == 1346
+        assert result["auto_retry"]["sources"] == ["US-PGPUB", "USPAT", "USOCR"]
+        assert mock_client.ppubs_count_patents.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_count_zero_without_phrase_gives_hint(self, mock_client):
+        mock_client.ppubs_count_patents.return_value = {
+            "numResults": 0,
+            "q": "zzznonexistent",
+            "databaseFilters": [],
+        }
+        result = await src.server.ppubs_get_search_count("zzznonexistent")
+        assert result["total"] == 0
+        assert "query_hint" in result
+        assert "auto_retry" not in result
+        assert mock_client.ppubs_count_patents.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_count_nonzero_no_hint_no_retry(self, mock_client):
+        mock_client.ppubs_count_patents.return_value = {
+            "numResults": 53254,
+            "q": "graphene AND battery",
+            "databaseFilters": [{"databaseName": "USPAT", "countryCodes": []}],
+        }
+        result = await src.server.ppubs_get_search_count("graphene battery")
+        assert "query_hint" not in result
+        assert "auto_retry" not in result
+
+
 class TestPublicationNumberNormalization:
     @pytest.mark.parametrize(
         "raw,expected",

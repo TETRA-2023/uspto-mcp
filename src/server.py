@@ -348,6 +348,7 @@ async def ppubs_search_patents(
 ) -> dict:
     """Search PPUBS and return a paginated, verbosity-filtered result envelope."""
     client = _get_client()
+    original_query = query
     query = _auto_brs(query)
     payload = await client.ppubs_search_patents(
         query=query,
@@ -366,10 +367,23 @@ async def ppubs_search_patents(
         "results": _filter_response(patents, "patent_summary", verbosity),
     }
     if result["total"] == 0:
-        result["query_hint"] = (
-            'Zero results — if the query used quoted phrases (e.g. "AI Agent"), '
-            "retry with bare AND terms (e.g. AI AND Agent AND Patent AND Writing)."
-        )
+        if '"' in original_query:
+            retry_query = _auto_brs(original_query.replace('"', ""))
+            retry_payload = await client.ppubs_search_patents(
+                query=retry_query, limit=limit, start=start, sort=sort, sources=sources
+            )
+            retry_patents = retry_payload.get("patents") or []
+            result["auto_retry"] = {
+                "query_used": retry_query,
+                "total": retry_payload.get("totalResults"),
+                "num_found": retry_payload.get("numFound"),
+                "results": _filter_response(retry_patents, "patent_summary", verbosity),
+            }
+        else:
+            result["query_hint"] = (
+                "Zero results — try broadening the query by replacing exact phrases "
+                "with AND-joined terms (e.g. AI AND agent AND prosecution)."
+            )
     return result
 
 
@@ -440,6 +454,7 @@ async def ppubs_get_search_count(
 ) -> dict:
     """Get count for a PPUBS query (no document pagination)."""
     client = _get_client()
+    original_query = query
     query = _auto_brs(query)
     payload = await client.ppubs_count_patents(query=query, sources=sources)
     echoed = [
@@ -453,10 +468,24 @@ async def ppubs_get_search_count(
         "sources": echoed or list(PPUBS_DEFAULT_SOURCES),
     }
     if result["total"] == 0:
-        result["query_hint"] = (
-            'Zero results — if the query used quoted phrases (e.g. "AI Agent"), '
-            "retry with bare AND terms (e.g. AI AND Agent)."
-        )
+        if '"' in original_query:
+            retry_query = _auto_brs(original_query.replace('"', ""))
+            retry_payload = await client.ppubs_count_patents(query=retry_query, sources=sources)
+            retry_echoed = [
+                f.get("databaseName")
+                for f in (retry_payload.get("databaseFilters") or [])
+                if f.get("databaseName")
+            ]
+            result["auto_retry"] = {
+                "query_used": retry_query,
+                "total": retry_payload.get("numResults"),
+                "sources": retry_echoed or list(PPUBS_DEFAULT_SOURCES),
+            }
+        else:
+            result["query_hint"] = (
+                "Zero results — try broadening the query by replacing exact phrases "
+                "with AND-joined terms (e.g. AI AND agent AND prosecution)."
+            )
     return result
 
 
