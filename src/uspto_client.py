@@ -386,6 +386,38 @@ class UsptoClient:
     # + optional single digit. Anchored to end of string.
     _KIND_CODE_SUFFIX_RE = re.compile(r"-[A-Z]\d?$")
 
+    # Matches any BRS operator that means the caller is already writing BRS:
+    # uppercase AND/OR/NOT keywords (word-boundary anchored so they don't fire
+    # inside words like "SANDSTONE"), field-code dots (.pn., .in., .ab., …),
+    # parentheses, and double-quotes (phrase search).
+    # Deliberately case-sensitive: lowercase "and"/"or" are treated as plain
+    # English words and will be AND-joined like any other term.
+    _BRS_OPERATOR_RE = re.compile(r"\bAND\b|\bOR\b|\bNOT\b|\.[a-z]{1,4}\.|[()\"']")
+
+    @staticmethod
+    def _auto_brs(query: str) -> str:
+        """Convert a plain-English multi-word query to BRS AND form.
+
+        If the query already contains any BRS operator (uppercase AND/OR/NOT,
+        a field-code dot expression, parentheses, or double-quotes), it is
+        returned unchanged — the caller is writing BRS directly.
+
+        Otherwise every whitespace-delimited token is joined with `` AND ``,
+        turning e.g. ``"graphene battery"`` into ``"graphene AND battery"``
+        and preventing the PPUBS default-OR flood that inflates result counts
+        46–11,000× vs an AND query.
+
+        Deliberately case-sensitive: lowercase ``and``/``or`` are treated as
+        plain-English words and will be AND-joined like any other token.
+        Single-token queries are returned as-is (no AND to add).
+        """
+        if UsptoClient._BRS_OPERATOR_RE.search(query):
+            return query
+        tokens = query.split()
+        if len(tokens) <= 1:
+            return query
+        return " AND ".join(tokens)
+
     @staticmethod
     def _normalize_publication_number(value: str) -> str:
         """Reduce a publication-number-shaped input to its bare PPUBS pub#.

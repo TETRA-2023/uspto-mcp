@@ -283,6 +283,95 @@ class TestPpubsTools:
         mock_client.ppubs_count_patents.assert_called_once_with(query="graphene", sources=["USPAT"])
 
 
+class TestAutoBrs:
+    def test_single_token_passthrough(self):
+        assert UsptoClient._auto_brs("graphene") == "graphene"
+
+    def test_multi_word_nl_joined_with_and(self):
+        assert UsptoClient._auto_brs("graphene battery") == "graphene AND battery"
+
+    def test_four_word_nl(self):
+        assert (
+            UsptoClient._auto_brs("CRISPR gene editing cancer")
+            == "CRISPR AND gene AND editing AND cancer"
+        )
+
+    def test_existing_and_passthrough(self):
+        assert UsptoClient._auto_brs("graphene AND battery") == "graphene AND battery"
+
+    def test_existing_or_passthrough(self):
+        assert UsptoClient._auto_brs("graphene OR battery") == "graphene OR battery"
+
+    def test_existing_not_passthrough(self):
+        assert UsptoClient._auto_brs("graphene NOT battery") == "graphene NOT battery"
+
+    def test_field_code_passthrough(self):
+        assert UsptoClient._auto_brs('("6103599").pn.') == '("6103599").pn.'
+
+    def test_parentheses_passthrough(self):
+        assert UsptoClient._auto_brs("(graphene OR battery)") == "(graphene OR battery)"
+
+    def test_double_quote_passthrough(self):
+        assert UsptoClient._auto_brs('"prior art"') == '"prior art"'
+
+    def test_lowercase_and_is_not_brs(self):
+        assert UsptoClient._auto_brs("graphene and battery") == "graphene AND and AND battery"
+
+    @pytest.mark.asyncio
+    async def test_search_nl_query_rewritten(self, mock_client):
+        mock_client.ppubs_search_patents.return_value = {
+            "numFound": 53254,
+            "totalResults": 53254,
+            "page": 0,
+            "perPage": 1,
+            "totalPages": 53254,
+            "patents": [],
+        }
+        await src.server.ppubs_search_patents("graphene battery", limit=1)
+        mock_client.ppubs_search_patents.assert_called_once_with(
+            query="graphene AND battery", limit=1, start=0, sort="date_publ desc", sources=None
+        )
+
+    @pytest.mark.asyncio
+    async def test_search_brs_query_not_rewritten(self, mock_client):
+        mock_client.ppubs_search_patents.return_value = {
+            "numFound": 53254,
+            "totalResults": 53254,
+            "page": 0,
+            "perPage": 1,
+            "totalPages": 53254,
+            "patents": [],
+        }
+        await src.server.ppubs_search_patents("graphene AND battery", limit=1)
+        mock_client.ppubs_search_patents.assert_called_once_with(
+            query="graphene AND battery", limit=1, start=0, sort="date_publ desc", sources=None
+        )
+
+    @pytest.mark.asyncio
+    async def test_count_nl_query_rewritten(self, mock_client):
+        mock_client.ppubs_count_patents.return_value = {
+            "numResults": 53254,
+            "q": "graphene AND battery",
+            "databaseFilters": [{"databaseName": "USPAT", "countryCodes": []}],
+        }
+        await src.server.ppubs_get_search_count("graphene battery")
+        mock_client.ppubs_count_patents.assert_called_once_with(
+            query="graphene AND battery", sources=None
+        )
+
+    @pytest.mark.asyncio
+    async def test_count_brs_query_not_rewritten(self, mock_client):
+        mock_client.ppubs_count_patents.return_value = {
+            "numResults": 53254,
+            "q": "graphene AND battery",
+            "databaseFilters": [{"databaseName": "USPAT", "countryCodes": []}],
+        }
+        await src.server.ppubs_get_search_count("graphene AND battery")
+        mock_client.ppubs_count_patents.assert_called_once_with(
+            query="graphene AND battery", sources=None
+        )
+
+
 class TestPublicationNumberNormalization:
     @pytest.mark.parametrize(
         "raw,expected",

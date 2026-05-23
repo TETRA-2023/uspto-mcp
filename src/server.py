@@ -12,6 +12,8 @@ from mcp.server.fastmcp import FastMCP
 from src.config import mask_credential, settings
 from src.uspto_client import PPUBS_DEFAULT_SOURCES, UsptoClient
 
+_auto_brs = UsptoClient._auto_brs
+
 logger = logging.getLogger(__name__)
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -346,6 +348,7 @@ async def ppubs_search_patents(
 ) -> dict:
     """Search PPUBS and return a paginated, verbosity-filtered result envelope."""
     client = _get_client()
+    query = _auto_brs(query)
     payload = await client.ppubs_search_patents(
         query=query,
         limit=limit,
@@ -437,6 +440,7 @@ async def ppubs_get_search_count(
 ) -> dict:
     """Get count for a PPUBS query (no document pagination)."""
     client = _get_client()
+    query = _auto_brs(query)
     payload = await client.ppubs_count_patents(query=query, sources=sources)
     echoed = [
         f.get("databaseName")
