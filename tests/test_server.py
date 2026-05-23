@@ -311,8 +311,24 @@ class TestAutoBrs:
     def test_parentheses_passthrough(self):
         assert UsptoClient._auto_brs("(graphene OR battery)") == "(graphene OR battery)"
 
-    def test_double_quote_passthrough(self):
-        assert UsptoClient._auto_brs('"prior art"') == '"prior art"'
+    def test_double_quote_flat_no_outer_ops(self):
+        # Quoted phrase, no outer operators → flatten to AND
+        assert UsptoClient._auto_brs('"prior art"') == "prior AND art"
+
+    def test_quoted_phrase_with_surrounding_words_flattened(self):
+        # "quantum dot" display smartphone → flatten all
+        assert UsptoClient._auto_brs('"quantum dot" display smartphone') == (
+            "quantum AND dot AND display AND smartphone"
+        )
+
+    def test_quoted_phrase_outer_ops_expand_in_phrase(self):
+        # Outer AND/OR present → expand inside phrases only
+        result = UsptoClient._auto_brs('("quantum dot" OR QLED) AND display')
+        assert result == "((quantum AND dot) OR QLED) AND display"
+
+    def test_mixed_quotes_outer_ops_multiple_phrases(self):
+        result = UsptoClient._auto_brs('"quantum dot" AND ("mobile" OR "portable" OR smartphone)')
+        assert result == "(quantum AND dot) AND (mobile OR portable OR smartphone)"
 
     def test_lowercase_and_is_not_brs(self):
         assert UsptoClient._auto_brs("graphene and battery") == "graphene AND and AND battery"

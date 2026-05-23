@@ -395,35 +395,52 @@ class UsptoClient:
 
     # Matches any BRS operator that means the caller is already writing BRS:
     # uppercase AND/OR/NOT keywords (word-boundary anchored so they don't fire
-    # inside words like "SANDSTONE"), field-code dots (.pn., .in., .ab., …),
-    # parentheses, and double-quotes (phrase search).
-    # Deliberately case-sensitive: lowercase "and"/"or" are treated as plain
-    # English words and will be AND-joined like any other term.
-    _BRS_OPERATOR_RE = re.compile(r"\bAND\b|\bOR\b|\bNOT\b|\.[a-z]{1,4}\.|[()\"']")
+    # Field-code expressions (.pn., .in., .ab., …) — caller wrote BRS directly.
+    _BRS_FIELD_CODE_RE = re.compile(r"\.[a-z]{1,4}\.")
+    # Boolean operators and grouping parens — uppercase only (lowercase "and"/"or" are English).
+    _BRS_BOOL_RE = re.compile(r"\bAND\b|\bOR\b|\bNOT\b|[()]")
+    # Quoted phrase capture for in-phrase expansion.
+    _PLAIN_PHRASE_RE = re.compile(r'"([^"]*)"')
 
     @staticmethod
     def _auto_brs(query: str) -> str:
         """Convert a plain-English multi-word query to BRS AND form.
 
-        If the query already contains any BRS operator (uppercase AND/OR/NOT,
-        a field-code dot expression, parentheses, or double-quotes), it is
-        returned unchanged — the caller is writing BRS directly.
-
-        Otherwise every whitespace-delimited token is joined with `` AND ``,
-        turning e.g. ``"graphene battery"`` into ``"graphene AND battery"``
-        and preventing the PPUBS default-OR flood that inflates result counts
-        46–11,000× vs an AND query.
-
-        Deliberately case-sensitive: lowercase ``and``/``or`` are treated as
-        plain-English words and will be AND-joined like any other token.
-        Single-token queries are returned as-is (no AND to add).
+        Decision tree (evaluated in order):
+        1. Field-code present (.xx.) → pass through; caller wrote BRS.
+        2. Double-quotes present:
+           a. Outer content (quotes stripped) has no AND/OR/NOT/parens →
+              flatten everything: strip quotes/boolean junk, AND-join all tokens.
+           b. Outer content has operators → expand words INSIDE each quoted
+              phrase to AND form; leave the outer structure intact.
+        3. Boolean operators or parens present (no quotes) → pass through.
+        4. Plain English → AND-join all tokens.
         """
-        if UsptoClient._BRS_OPERATOR_RE.search(query):
+        if UsptoClient._BRS_FIELD_CODE_RE.search(query):
             return query
+
+        if '"' in query:
+            outer = UsptoClient._PLAIN_PHRASE_RE.sub("", query)
+            if not UsptoClient._BRS_BOOL_RE.search(outer):
+                # No outer operators — flatten all quoted and unquoted terms together.
+                clean = re.sub(r'\b(AND|OR|NOT)\b|["()\']+', " ", query)
+                tokens = clean.split()
+                return " AND ".join(tokens) if tokens else query
+            else:
+                # Outer structure has operators — only expand inside quoted phrases.
+                def _expand_phrase(m: re.Match) -> str:
+                    tokens = m.group(1).split()
+                    if len(tokens) > 1:
+                        return "(" + " AND ".join(tokens) + ")"
+                    return tokens[0] if tokens else ""
+
+                return UsptoClient._PLAIN_PHRASE_RE.sub(_expand_phrase, query)
+
+        if UsptoClient._BRS_BOOL_RE.search(query):
+            return query
+
         tokens = query.split()
-        if len(tokens) <= 1:
-            return query
-        return " AND ".join(tokens)
+        return " AND ".join(tokens) if len(tokens) > 1 else query
 
     @staticmethod
     def _normalize_publication_number(value: str) -> str:
