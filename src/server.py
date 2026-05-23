@@ -417,6 +417,101 @@ async def ppubs_get_patent_by_number(
 
 
 @mcp.tool(
+    "search_patents_with_details",
+    description=(
+        "Search US patents and fetch the full document for each result in a single "
+        "call — combines `ppubs_search_patents` + N×`ppubs_get_patent_by_number` "
+        "with parallel detail fetches. Use this when the task is 'find the N most "
+        "recent patents about X and summarize each one' — you get search results "
+        "AND full abstractHtml/claimsHtml in one round trip instead of N+1 calls. "
+        "Accepts plain English ('transformer attention mechanism') or BRS syntax; "
+        "plain English is auto-rewritten to AND form. Default limit=3 (the target "
+        "for composite queries); max recommended is 5 to stay within PPUBS rate "
+        "limits. Returns a search envelope (total, results[]) PLUS a details[] "
+        "list, one entry per result: {found, publication_number, record{…}} where "
+        "record contains abstractHtml, claimsHtml, inventors, assignee, "
+        "classification, and all other patent_detail standard fields. If a "
+        "quoted-phrase search returns zero results, auto-retries in AND form and "
+        "includes an auto_retry key. Pass verbosity='full' for all 450 raw detail "
+        "fields per record."
+    ),
+)
+async def search_patents_with_details(
+    query: str,
+    limit: int = 3,
+    sort: str = "date_publ desc",
+    sources: Optional[list[str]] = None,
+    verbosity: str = "standard",
+) -> dict:
+    """Search + parallel detail fetch in one composite call."""
+    client = _get_client()
+    original_query = query
+    query = _auto_brs(query)
+
+    payload = await client.search_patents_with_details(
+        query=query,
+        limit=limit,
+        sort=sort,
+        sources=sources,
+    )
+
+    patents = payload.get("patents") or []
+    raw_details = payload.get("details") or []
+
+    result: dict = {
+        "total": payload.get("totalResults"),
+        "num_found": payload.get("numFound"),
+        "page": payload.get("page"),
+        "per_page": payload.get("perPage"),
+        "total_pages": payload.get("totalPages"),
+        "query": query,
+        "results": _filter_response(patents, "patent_summary", verbosity),
+        "details": [
+            {
+                "found": d.get("found", False),
+                "publication_number": d.get("publication_number"),
+                **(
+                    {"record": _filter_response(d["record"], "patent_detail", verbosity)}
+                    if d.get("found") and d.get("record")
+                    else {}
+                ),
+                **({"error": d["error"]} if "error" in d else {}),
+            }
+            for d in raw_details
+        ],
+    }
+
+    if result["total"] == 0 and '"' in original_query:
+        retry_query = _auto_brs(original_query.replace('"', ""))
+        retry_payload = await client.search_patents_with_details(
+            query=retry_query, limit=limit, sort=sort, sources=sources
+        )
+        retry_patents = retry_payload.get("patents") or []
+        retry_raw_details = retry_payload.get("details") or []
+        result["auto_retry"] = {
+            "query_used": retry_query,
+            "total": retry_payload.get("totalResults"),
+            "num_found": retry_payload.get("numFound"),
+            "results": _filter_response(retry_patents, "patent_summary", verbosity),
+            "details": [
+                {
+                    "found": d.get("found", False),
+                    "publication_number": d.get("publication_number"),
+                    **(
+                        {"record": _filter_response(d["record"], "patent_detail", verbosity)}
+                        if d.get("found") and d.get("record")
+                        else {}
+                    ),
+                    **({"error": d["error"]} if "error" in d else {}),
+                }
+                for d in retry_raw_details
+            ],
+        }
+
+    return result
+
+
+@mcp.tool(
     "ppubs_get_search_count",
     description=(
         "Count US patents and published applications matching a query, without "

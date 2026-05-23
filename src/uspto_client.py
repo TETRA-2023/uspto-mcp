@@ -91,6 +91,7 @@ class UsptoClient:
         self._ppubs_case_id: Optional[int] = None
         self._ppubs_token: Optional[str] = None
         self._ppubs_session_expires_at: Optional[datetime] = None
+        self._ppubs_session_lock = asyncio.Lock()
 
         self._odp: Optional[httpx.AsyncClient] = None
         if odp_api_key:
@@ -156,14 +157,20 @@ class UsptoClient:
         logger.info("PPUBS session established (caseId=%s)", self._ppubs_case_id)
 
     async def _ensure_ppubs_session(self) -> None:
-        """Establish or reuse a cached PPUBS session."""
-        if (
-            self._ppubs_case_id is not None
-            and self._ppubs_session_expires_at is not None
-            and datetime.now() < self._ppubs_session_expires_at
-        ):
-            return
-        await self._establish_ppubs_session()
+        """Establish or reuse a cached PPUBS session.
+
+        Lock prevents concurrent callers from racing to create duplicate
+        sessions — the second waiter finds the session already valid after
+        the first establishes it.
+        """
+        async with self._ppubs_session_lock:
+            if (
+                self._ppubs_case_id is not None
+                and self._ppubs_session_expires_at is not None
+                and datetime.now() < self._ppubs_session_expires_at
+            ):
+                return
+            await self._establish_ppubs_session()
 
     @staticmethod
     def _parse_retry_after(
@@ -480,3 +487,58 @@ class UsptoClient:
                 status_code=response.status_code,
             )
         return response.json()
+
+    async def search_patents_with_details(
+        self,
+        query: str,
+        *,
+        limit: int = 3,
+        start: int = 0,
+        sort: str = "date_publ desc",
+        sources: Optional[list[str]] = None,
+    ) -> dict:
+        """Search PPUBS and fetch full document details for each result in parallel.
+
+        Combines one ``ppubs_search_patents`` call with N concurrent
+        ``ppubs_get_patent_by_number`` calls via ``asyncio.gather``. Session
+        is established before the gather so concurrent detail fetches all hit
+        the fast (already-valid) path through ``_ensure_ppubs_session``.
+
+        Returns the search envelope plus a ``details`` list — one entry per
+        search result, ordered identically. Exceptions from individual detail
+        fetches are captured and stored as ``{"error": str}`` rather than
+        aborting the whole gather.
+        """
+        await self._ensure_ppubs_session()
+
+        search_payload = await self.ppubs_search_patents(
+            query=query,
+            limit=limit,
+            start=start,
+            sort=sort,
+            sources=sources,
+        )
+        patents = search_payload.get("patents") or []
+
+        if not patents:
+            return {**search_payload, "details": []}
+
+        pub_numbers = [
+            p.get("publicationReferenceDocumentNumber") or p.get("guid") for p in patents
+        ]
+
+        raw_details = await asyncio.gather(
+            *[self.ppubs_get_patent_by_number(pn) for pn in pub_numbers if pn],
+            return_exceptions=True,
+        )
+
+        details: list[Any] = []
+        for pn, result in zip(pub_numbers, raw_details):
+            if isinstance(result, BaseException):
+                details.append({"found": False, "publication_number": pn, "error": str(result)})
+            elif result is None:
+                details.append({"found": False, "publication_number": pn})
+            else:
+                details.append({"found": True, "publication_number": pn, "record": result})
+
+        return {**search_payload, "details": details}
