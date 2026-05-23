@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "uspto-mcp"
-version = "1.7.0"
+version = "1.8.0"
 description = "MCP server wrapping USPTO patent data sources (PPUBS, ODP)"
 requires-python = ">=3.12"
 authors = [{ name = "TETRA" }]
