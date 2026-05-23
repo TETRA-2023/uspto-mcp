@@ -15,6 +15,67 @@ updated together.
 For the wire protocol (auth, endpoints, request shapes) see
 [`memory://main/tetra/uspto/uspto-ppubs-wire-protocol-locked-2026-05-10-against-live-probe`](https://docs.tetra-ai.fr) (BM project `main`).
 
+## BRS search field codes
+
+Verified live against PPUBS on **2026-05-23** (T06 probe). Use these codes in
+`ppubs_search_patents` and `ppubs_get_search_count` queries. The BRS syntax is
+`("value").field.` (with parens + double-quotes) or `(value$).field.` for
+truncation (no inner quotes when using `$`).
+
+### Confirmed field codes
+
+| Code | Field | Example | Notes |
+|---|---|---|---|
+| `.in.` | Inventor surname | `("Hinton").in.` | Case-insensitive. Last name only — `"Hinton; Geoffrey"` (semicolon format) returns zero. Truncation: `(Hinton$).in.` |
+| `.as.` | Assignee / applicant name | `("Tesla").as.` | Case-insensitive. Partial match works. Truncation: `(Apple$).as.`. Works for both granted (assignee) and pre-grant PGPUB (applicant). |
+| `.cpc.` | CPC classification | `(H01M10/0525).cpc.` | Full subclass works unquoted. **Broad class (`H01M`) requires `$` truncation**: `(H01M$).cpc.` — `("H01M").cpc.` returns zero. |
+| `.ti.` | Invention title | `("battery").ti.` | Standard quoted phrase. |
+| `.ab.` | Abstract text | `("graphene").ab.` | Standard quoted phrase. |
+| `.clm.` | Claims text | `("battery").clm.` | **Not `.cl.`** — `.cl.` returns zero. |
+| `.spec.` | Specification / description | `("graphene").spec.` | Full specification text including background. |
+| `@pd>=` | Published date lower bound | `@pd>=20240101` | Format: `YYYYMMDD` (no dashes). Combine with AND: `("Tesla").as. AND @pd>=20230101` |
+| `@pd<=` | Published date upper bound | `@pd<=20231231` | Same format. Combine both for a range: `@pd>=20230101 @pd<=20231231` |
+
+### Confirmed non-working codes (do not use)
+
+| Code | Intended meaning | Correct alternative |
+|---|---|---|
+| `.an.` | Assignee name | Use `.as.` |
+| `.pa.` | Applicant name (PGPUB) | Use `.as.` (covers both) |
+| `.cl.` | Claims | Use `.clm.` |
+| `.ap.` | Applicant | Use `.as.` |
+| `.aa.` | Applicant alias | Use `.as.` |
+| `.fld.` | All fields | n/a — use field-specific codes |
+
+### Combination patterns
+
+All field codes compose with AND. Verified combinations:
+
+```
+# Assignee + date range
+("Tesla").as. AND @pd>=20230101
+
+# Assignee + CPC class + date range
+("Tesla").as. AND (H01M$).cpc. AND @pd>=20220101
+
+# Title + abstract cross-field
+("graphene").ti. AND ("battery").ab.
+
+# Inventor + CPC class
+("Hinton").in. AND ("G06N").cpc.
+```
+
+### Gotchas
+
+1. **`.as.` not `.an.`** — `.an.` is documented in some third-party references but returns zero in PPUBS. `.as.` is the live field code.
+2. **`.clm.` not `.cl.`** — same situation.
+3. **CPC broad class needs `$` truncation** — `("H01M").cpc.` (quoted) returns zero; `(H01M$).cpc.` (unquoted + `$`) returns results. Specific full subclass codes (e.g. `H01M10/0525`) work unquoted without `$`.
+4. **Inventor: last name only** — `("Hinton; Geoffrey").in.` (USPTO semicolon-separated format from response fields) returns zero. Query with surname only: `("Hinton").in.`
+5. **Date format is `YYYYMMDD`** — no dashes, no slashes.
+6. **`totalResults` vs `numFound`** — `totalResults` is family-filtered (may show 1 for many raw results); use `ppubs_get_search_count` for reliable corpus totals.
+
+---
+
 ## Endpoints surveyed
 
 | Endpoint | Top-level keys | Per-record keys |
