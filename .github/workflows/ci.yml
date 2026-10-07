@@ -99,12 +99,13 @@ jobs:
       # transport, then initialize + tools/list. Unit tests stayed green while
       # langfuse-mcp v1.1.6/v1.1.7 crash-looped at import in prod (2026-10-07,
       # TETRA-2023/langfuse-mcp#81); this step is what catches that. Dummy
-      # credentials only: tools/list must not need a reachable PPUBS. No host port is published,
+      # credentials only: tools/list must not need a reachable PPUBS. The server runs with --network none, so CI never
+      # calls a real upstream (EPO OPS, PPUBS, ...). No host port is published,
       # and the script is piped on stdin (no bind mount: self-hosted runners
       # drive the HOST daemon, which cannot see the runner's workspace).
       - name: Smoke test image (initialize + tools/list)
         run: |
-          docker run -d --name "$SMOKE_NAME" \
+          docker run -d --network none --name "$SMOKE_NAME" \
             -e USPTO_TRANSPORT=streamable-http \
             -e MCP_HOST=0.0.0.0 \
             -e MCP_PORT=8000 \
